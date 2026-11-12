@@ -17,6 +17,8 @@ export interface GuardOptions {
   maxTotalChars: number; // across all tool results in one run
   log: (line: string) => void;
   onEvent?: (event: GuardEvent) => void;
+  /** Tools whose small, pure output must keep working after the output budget is spent (the calculator). */
+  budgetExempt?: string[];
 }
 
 // Sized for a local model with an 8k-token window (numbers tokenise at ~2-3 chars/token).
@@ -70,7 +72,7 @@ export function createGuard(opts: GuardOptions) {
 
     async beforeToolCall(ctx: BeforeToolCallContext): Promise<BeforeToolCallResult | undefined> {
       let reason = tripped;
-      if (!reason && totalChars >= opts.maxTotalChars) {
+      if (!reason && totalChars >= opts.maxTotalChars && !opts.budgetExempt?.includes(ctx.toolCall.name)) {
         reason = `tool output limit reached (${opts.maxTotalChars} characters per question)`;
       }
       if (!reason) return undefined;
@@ -89,7 +91,7 @@ export function createGuard(opts: GuardOptions) {
           text = text.slice(0, opts.maxOutputChars) + `\n[output truncated at ${opts.maxOutputChars} characters]`;
           truncated = true;
         }
-        totalChars += text.length;
+        if (!opts.budgetExempt?.includes(ctx.toolCall?.name)) totalChars += text.length;
         return { ...part, text };
       });
       return truncated ? { content } : undefined;

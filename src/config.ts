@@ -9,6 +9,9 @@ export interface Config {
   workspaceDir: string;
   auditDir: string;
   allowCloudFiles: boolean;
+  calcShape: "steps" | "expr";
+  /** Override of the provider's reasoning-history policy (src/reasoning.ts); undefined means the profile default. */
+  reasoningHistory?: "drop" | "latest" | "keep";
   envFileFound: boolean;
 }
 
@@ -26,6 +29,11 @@ export function loadConfig(): Config {
     throw new Error(`PROVIDER must be "ollama" or "anthropic" (got "${provider}").`);
   }
 
+  const reasoningHistory = env.REASONING_HISTORY?.trim().toLowerCase() || undefined;
+  if (reasoningHistory !== undefined && reasoningHistory !== "drop" && reasoningHistory !== "latest" && reasoningHistory !== "keep") {
+    throw new Error(`REASONING_HISTORY must be "drop", "latest" or "keep" (got "${reasoningHistory}").`);
+  }
+
   return {
     provider,
     ollamaModel: env.OLLAMA_MODEL?.trim() || "qwen3:14b",
@@ -35,6 +43,8 @@ export function loadConfig(): Config {
     workspaceDir: env.WORKSPACE_DIR?.trim() || "workspace",
     auditDir: env.AUDIT_DIR?.trim() || "audit",
     allowCloudFiles: env.ALLOW_CLOUD_FILES?.trim() === "1",
+    calcShape: env.CALC_SHAPE?.trim() === "expr" ? "expr" : "steps",
+    reasoningHistory,
     envFileFound,
   };
 }

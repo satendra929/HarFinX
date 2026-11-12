@@ -1,6 +1,6 @@
 // Audit log v0: one append-only JSONL file per session, one record per line.
 // Record = { v, seq, ts, session, type, ...data }. `seq` counts up from 1 within the session.
-// Local only, git-ignored (audit/). Hash chain and replay come later; `v` leaves room for them.
+// Local only, git-ignored (audit/). `v` is the record format version.
 // A failed write throws: the caller must stop the run (fail closed, see cli.ts).
 import fs from "node:fs";
 import path from "node:path";

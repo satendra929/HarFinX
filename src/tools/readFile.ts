@@ -6,7 +6,23 @@ import type { Workspace } from "../workspace.ts";
 // Must stay below the guard's per-result cap (maxOutputChars) so the "more available" note is not cut off.
 export const CHUNK_CHARS = 4000;
 
-export function readFileTool(workspace: Workspace): AgentTool<any> {
+/**
+ * The text of a chunk that is safe to treat as "shown to the model" for provenance: a number cut by a chunk edge
+ * is excluded at the end and included whole at the start of the chunk that continues it.
+ */
+export function shownSlice(text: string, offset: number, end: number): string {
+  let from = offset;
+  while (from > 0 && !/\s/.test(text[from - 1])) from--; // head of a token split by the previous chunk
+  let to = end;
+  if (end < text.length && !/\s/.test(text[end - 1]) && !/\s/.test(text[end])) {
+    const cut = text.slice(offset, end).search(/\S+$/); // start of the trailing partial token
+    if (cut > 0) to = offset + cut;
+  }
+  return text.slice(from, to);
+}
+
+/** `onShown` receives the file text the model has now seen (used to build the figure-provenance ledger). */
+export function readFileTool(workspace: Workspace, onShown?: (path: string, text: string) => void): AgentTool<any> {
   return {
     name: "read_file",
     label: "Read file",
@@ -32,6 +48,7 @@ export function readFileTool(workspace: Workspace): AgentTool<any> {
         return { content: [{ type: "text", text: `[offset ${offset} is past the end of the file (${text.length} characters)]` }], details: {} };
       }
       const end = Math.min(offset + CHUNK_CHARS, text.length);
+      onShown?.(params.path, shownSlice(text, offset, end));
       let out = text.slice(offset, end);
       out +=
         end < text.length

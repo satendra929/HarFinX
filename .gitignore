@@ -14,6 +14,7 @@ audit/
 # Eval: FinanceBench data and gold answers (non-commercial licence) and per-run results/logs. Scripts and RUBRIC stay tracked.
 eval/data/
 eval/runs/
+eval/scorer-input/
 logs/
 sessions/
 *.jsonl

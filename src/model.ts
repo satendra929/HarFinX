@@ -39,6 +39,10 @@ export function createModelFor(cfg: Config): { models: ReturnType<typeof createM
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 8192, // must match OLLAMA_CONTEXT_LENGTH
         maxTokens: 4096,
+        // Do NOT add `maxTokensField: "max_tokens"` here without also fixing the numbers above. Ollama ignores the
+        // `max_completion_tokens` Pi sends by default, which is why replies are not cut today: Pi reserves a fixed
+        // 4,096-token margin, so in this 8,192-token window it would ask for almost no output once the prompt grows
+        // past about half the window. A looping reply is stopped by src/runaway.ts instead.
         compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
       };
       models.setProvider(
