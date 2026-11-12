@@ -16,6 +16,7 @@ import { recoverReply } from "./recover.ts";
 import { reasoningProfile } from "./reasoning.ts";
 import { REPLY_CHARS_PER_CAP_TOKEN, guardRunaway } from "./runaway.ts";
 import { friendlyError } from "./errors.ts";
+import { answerTextSince, checkAnswer, checkLine } from "./check.ts";
 
 const SYSTEM_PROMPT =
   "You are HarFinX, a careful assistant for financial analysts. " +
@@ -32,6 +33,7 @@ const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 // Guard lines are yellow. Model text is stripped of escape codes before printing (cleanForTerminal),
 // so a yellow [guard] line can only come from the harness.
 const guardLine = (s: string) => `\x1b[33m[guard] ${s}\x1b[0m`;
+const warnLine = (s: string) => `\x1b[33m${s}\x1b[0m`; // yellow, like guard lines: model text cannot produce it
 
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
@@ -166,6 +168,19 @@ async function main(): Promise<void> {
       showReasoning: (text) => console.log(cleanForTerminal(text)),
     });
     process.stdout.write("\n");
+
+    // Live figure check (src/check.ts): warn-only. It never changes the answer, and a failure here never stops one.
+    if (!userAborted && !guard.tripped && !auditError && !stuck && !agent.state.errorMessage) {
+      try {
+        const summary = checkAnswer(answerTextSince(agent.state.messages), ledger);
+        record("provenance", { figures: summary.figures, counts: summary.counts, unverified: summary.unverified.slice(0, 20) });
+        const line = checkLine(summary);
+        if (line) console.log(line.warn ? warnLine(line.text) : dim(line.text));
+      } catch (err) {
+        record("provenance_error", { error: err instanceof Error ? err.message : String(err) });
+        console.log(dim("[check] could not run for this answer"));
+      }
+    }
 
     let outcome: "ok" | "error" | "aborted" | "guard_tripped" | "runaway" = "ok";
     const err = agent.state.errorMessage;

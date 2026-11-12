@@ -52,7 +52,7 @@ A model that is not installed gives the `ollama pull` command to run. Different 
 
 `calculate` takes numbers copied from the file exactly as printed (`"11,503"`, `"(473)"`, `"3.06%"`) plus expressions, and returns the values to quote. It uses exact decimal arithmetic (no floating-point surprises), rounds half away from zero like Excel, never rounds intermediate values unless asked, and has no `eval`. Functions: `sum avg min max abs round sqrt pow ratio pct_change cagr`, each with a stated definition that the answer should repeat. It warns when an input is not found in the file text read so far or in your question, and when rounding to the requested decimals changes a value by more than 1% (for example a rate shown as `0.1` instead of `10.3%`). Unit words (million, thousand) are rejected on purpose: copy the number as printed and let the calculator convert.
 
-`src/provenance.ts` can classify every figure in an answer as from the file, from your question, from the calculator, a non-figure (year, list number), or unverified. This tells you whether a figure is traceable, not whether it is right. It runs offline over audit logs; it is not part of the live chat.
+After every answer, HarFinX checks each figure in it and prints one `[check]` line. A figure is traced if it appears in the file the model read, in your question, or in a `calculate` result; years and list numbers are not counted as figures. A dim line means every figure traced. A yellow line lists the figures that could not be traced (for example a number the model took from memory), so you can verify them against the source. This tells you whether a figure is traceable, not whether it is right: a wrong row or period still passes. The check only warns; it never changes or blocks an answer. The same check can be run over saved audit logs (`npm run eval:provenance`).
 
 ## Safety
 
@@ -95,6 +95,7 @@ Local Ollama keeps everything on your machine, and no identifying headers are se
 - `src/tools/readFile.ts`, `src/tools/calculate.ts`: the two tools
 - `src/calc/`: the calculator engine (numbers, parser, evaluator, functions)
 - `src/provenance.ts`: classifies the figures in an answer
+- `src/check.ts`: the live `[check]` line built on it
 - `src/reasoning.ts`: the one place for provider-specific reasoning ("thinking") settings
 - `src/payload.ts`, `src/repair.ts`, `src/runaway.ts`, `src/errors.ts`: protections for model quirks and friendly errors
 - `src/audit.ts`: the append-only audit log
