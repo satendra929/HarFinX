@@ -105,6 +105,14 @@ export function calculateTool(ledger: Ledger, shape: CalcShape = "steps"): Agent
         }
       }
 
+      // The displayed value must not be a badly rounded version of the exact one (a rate shown as 0.1 instead of 10.3%).
+      for (const s of run.steps) {
+        if (s.displayLoss !== undefined) {
+          const fix = s.pct ? "use more decimal places in dp" : "use more decimal places in dp, or set pct:true if it is a rate to show as a percent";
+          warnings.push(`step "${s.name}": shows ${s.shown} but the exact value is ${s.full}${s.pct ? " (a fraction)" : ""}; rounding changed it by ${s.displayLoss}%. Do not quote ${s.shown}: ${fix}, then run it again.`);
+        }
+      }
+
       for (const s of run.steps) ledger.addCalc(s.name, s.value.toString(), s.shown, s.pct);
 
       const lines: string[] = [];

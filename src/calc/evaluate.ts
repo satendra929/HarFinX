@@ -1,7 +1,7 @@
 // Evaluator: inputs -> steps -> results. Deterministic (no clock, no randomness, no locale), bounded, and free of
 // object-property lookups: names resolve through Maps, so "constructor" or "__proto__" are just unknown names.
 import { FUNCTION_MAP } from "./functions.ts";
-import { CalcError, D, checkFinite, parseInputLiteral, shownValue, sig12, type Num } from "./num.ts";
+import { CalcError, D, checkFinite, displayLossPercent, parseInputLiteral, shownValue, sig12, type Num } from "./num.ts";
 import { callsOf, literalsOf, parse, type Node } from "./parse.ts";
 import { power } from "./functions.ts";
 
@@ -25,6 +25,8 @@ export interface StepResult {
   shown: string;
   full: string; // 12 significant digits, what the model sees besides `shown`
   pct: boolean;
+  /** Set when rounding to the requested decimals changed the value by more than 1%: the change, in percent. */
+  displayLoss?: string;
   calls: string[];
   literals: string[]; // numeric literals written in the expression
 }
@@ -102,7 +104,7 @@ export function runProgram(inputs: Record<string, string>, steps: StepInput[]): 
     const value = evalNode(tree, `step ${i + 1} "${s.name}"`);
     env.set(s.name, value);
     const pct = s.pct === true;
-    results.push({ name: s.name, expr: s.expr, value, shown: shownValue(value, s.dp, pct), full: sig12(value), pct, calls: [...callsOf(tree)], literals: literalsOf(tree) });
+    results.push({ name: s.name, expr: s.expr, value, shown: shownValue(value, s.dp, pct), full: sig12(value), pct, displayLoss: displayLossPercent(value, s.dp, pct), calls: [...callsOf(tree)], literals: literalsOf(tree) });
   }
   return { inputs: inputResults, steps: results };
 }

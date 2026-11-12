@@ -16,7 +16,7 @@
 
 1. **Node.js 22** or newer.
 2. **Ollama for Windows**: <https://ollama.com>
-3. A model: `ollama pull qwen3:14b` (about 9 GB; fits a 12 GB GPU at 8k context). For more speed or a longer context use `qwen3:8b` and set `OLLAMA_MODEL=qwen3:8b` in `.env`.
+3. A model: `ollama pull gemma4:12b` (about 8 GB, the default). `ollama pull qwen3:14b` (about 9 GB; fits a 12 GB GPU at 8k context) also works; see "Choosing a model".
 4. A **user environment variable** `OLLAMA_CONTEXT_LENGTH=8192`, then restart Ollama. Without it Ollama silently drops older turns of the conversation.
 
 ## Quick start
@@ -36,11 +36,21 @@ npm test                                        # tests (no model needed)
 npm run typecheck
 ```
 
-Chat commands: `/new` clears the conversation, `exit` quits. Ctrl+C stops a running answer; at the prompt it quits.
+Chat commands: `/model` lists or switches the model, `/new` clears the conversation, `exit` quits. Ctrl+C stops a running answer; at the prompt it quits.
+
+## Choosing a model
+
+HarFinX works with local models served by Ollama. Two are set up with short names: `gemma` (`gemma4:12b`, about 8 GB, the default) and `qwen` (`qwen3:14b`, about 9 GB). Any other installed Ollama tag also works by its full name.
+
+- **Per run:** `npm start -- --model qwen` (chat) or `npm start -- --model qwen "your question"` (one answer).
+- **In chat:** `/model` lists the installed models and marks the one in use; `/model qwen`, `/model gemma4:12b` or `/model 2` switches for the rest of the session. The conversation continues; `/new` starts a fresh one.
+- **As your default:** set `OLLAMA_MODEL=qwen` in `.env`.
+
+A model that is not installed gives the `ollama pull` command to run. Different models can answer differently, so check figures against the source whichever you use.
 
 ## The calculator
 
-`calculate` takes numbers copied from the file exactly as printed (`"11,503"`, `"(473)"`, `"3.06%"`) plus expressions, and returns the values to quote. It uses exact decimal arithmetic (no floating-point surprises), rounds half away from zero like Excel, never rounds intermediate values unless asked, and has no `eval`. Functions: `sum avg min max abs round sqrt pow ratio pct_change cagr`, each with a stated definition that the answer should repeat. It warns when an input is not found in the file text read so far or in your question. Unit words (million, thousand) are rejected on purpose: copy the number as printed and let the calculator convert.
+`calculate` takes numbers copied from the file exactly as printed (`"11,503"`, `"(473)"`, `"3.06%"`) plus expressions, and returns the values to quote. It uses exact decimal arithmetic (no floating-point surprises), rounds half away from zero like Excel, never rounds intermediate values unless asked, and has no `eval`. Functions: `sum avg min max abs round sqrt pow ratio pct_change cagr`, each with a stated definition that the answer should repeat. It warns when an input is not found in the file text read so far or in your question, and when rounding to the requested decimals changes a value by more than 1% (for example a rate shown as `0.1` instead of `10.3%`). Unit words (million, thousand) are rejected on purpose: copy the number as printed and let the calculator convert.
 
 `src/provenance.ts` can classify every figure in an answer as from the file, from your question, from the calculator, a non-figure (year, list number), or unverified. This tells you whether a figure is traceable, not whether it is right. It runs offline over audit logs; it is not part of the live chat.
 
@@ -79,6 +89,7 @@ Local Ollama keeps everything on your machine, and no identifying headers are se
 
 - `src/config.ts`: loads `.env`, validates settings
 - `src/model.ts`: the single place a provider is chosen
+- `src/modelChoice.ts`: short model names, the `--model` flag, the list of installed models
 - `src/workspace.ts`: the one allowed folder and confined file reads
 - `src/guard.ts`: per-question limits on tool use
 - `src/tools/readFile.ts`, `src/tools/calculate.ts`: the two tools

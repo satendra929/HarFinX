@@ -35,9 +35,22 @@ const PROFILES: Record<Provider, ReasoningProfile> = {
   anthropic: { history: "keep", historyAdjustable: false },
 };
 
-/** The profile for a provider, with an optional override of the history policy (env REASONING_HISTORY). */
-export function reasoningProfile(provider: Provider, historyOverride?: ReasoningHistory): ReasoningProfile {
-  const base = PROFILES[provider];
+/**
+ * Per-model-family differences within a provider (matched on the start of the model tag).
+ * Gemma on Ollama: `reasoning_effort: "none"` is not used, because switching thinking off can make this family
+ * return an empty reply after a tool result. The one retry is a plain second attempt instead.
+ */
+const FAMILY_PROFILES: { provider: Provider; prefix: RegExp; profile: ReasoningProfile }[] = [
+  { provider: "ollama", prefix: /^gemma/i, profile: { history: "drop", historyAdjustable: true } },
+];
+
+/**
+ * The profile for a provider (and, optionally, the model in use), with an optional override of the history policy
+ * (env REASONING_HISTORY).
+ */
+export function reasoningProfile(provider: Provider, historyOverride?: ReasoningHistory, modelId?: string): ReasoningProfile {
+  const family = modelId ? FAMILY_PROFILES.find((f) => f.provider === provider && f.prefix.test(modelId)) : undefined;
+  const base = family?.profile ?? PROFILES[provider];
   if (historyOverride === undefined || historyOverride === base.history) return base;
   if (!base.historyAdjustable) {
     throw new Error(`REASONING_HISTORY=${historyOverride} is not supported for PROVIDER=${provider}: its API needs earlier reasoning returned unchanged ("${base.history}").`);

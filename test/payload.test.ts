@@ -11,7 +11,7 @@ const payload = () => ({
     { role: "user", content: "q" },
     { role: "assistant", content: null, reasoning: "thinking 1", tool_calls: [{ id: "a", type: "function", function: { name: "read_file", arguments: "{}" } }] },
     { role: "tool", tool_call_id: "a", content: "file text" },
-    { role: "assistant", content: "text", reasoning_content: "thinking 2", reasoning_text: "thinking 3", tool_calls: [{ id: "b" }] },
+    { role: "assistant", content: "text", reasoning_content: "thinking 2", reasoning_text: "thinking 3", reasoning_details: [{ type: "reasoning.text", text: "thinking 4" }], tool_calls: [{ id: "b" }] },
   ],
 });
 
@@ -20,6 +20,7 @@ test("removes reasoning fields from assistant messages only, keeping tool calls 
   assert.equal(out.messages[2].reasoning, undefined);
   assert.equal(out.messages[4].reasoning_content, undefined);
   assert.equal(out.messages[4].reasoning_text, undefined);
+  assert.equal(out.messages[4].reasoning_details, undefined);
   assert.equal(out.messages[2].content, null);
   assert.equal(out.messages[2].tool_calls[0].function.name, "read_file");
   assert.equal(out.messages[4].content, "text");

@@ -60,3 +60,19 @@ export function shownValue(x: Num, dp: number | undefined, pct: boolean): string
   const text = places === undefined ? sig12(v) : noNegZero(roundHalfAway(v, places)).toFixed(places);
   return pct ? `${text}%` : text;
 }
+
+/** Rounding that moves the shown value more than this share of the exact value is reported to the model. */
+export const DISPLAY_LOSS_LIMIT = new D("0.01");
+
+/**
+ * How much the rounding in `shownValue` changed the value, as a percentage of the exact value (one decimal), or
+ * undefined when it is within DISPLAY_LOSS_LIMIT (or the value is zero, or nothing is rounded). A rate shown as a plain
+ * number with few decimals (0.1028 shown as 0.1) is the typical case.
+ */
+export function displayLossPercent(x: Num, dp: number | undefined, pct: boolean): string | undefined {
+  const places = dp ?? (pct ? 1 : undefined);
+  if (places === undefined || x.isZero()) return undefined;
+  const v = pct ? x.times(100) : x;
+  const loss = roundHalfAway(v, places).minus(v).abs().div(v.abs());
+  return loss.gt(DISPLAY_LOSS_LIMIT) ? loss.times(100).toDecimalPlaces(1, D.ROUND_HALF_UP).toFixed(1) : undefined;
+}

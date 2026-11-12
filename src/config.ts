@@ -1,3 +1,5 @@
+import { DEFAULT_OLLAMA_MODEL, resolveModel } from "./modelChoice.ts";
+
 export type Provider = "ollama" | "anthropic";
 
 export interface Config {
@@ -15,7 +17,8 @@ export interface Config {
   envFileFound: boolean;
 }
 
-export function loadConfig(): Config {
+/** `overrides.model` (the --model flag) wins over OLLAMA_MODEL; either may be a short name such as "gemma". */
+export function loadConfig(overrides: { model?: string } = {}): Config {
   let envFileFound = true;
   try {
     process.loadEnvFile();
@@ -36,7 +39,7 @@ export function loadConfig(): Config {
 
   return {
     provider,
-    ollamaModel: env.OLLAMA_MODEL?.trim() || "qwen3:14b",
+    ollamaModel: resolveModel(overrides.model?.trim() || env.OLLAMA_MODEL?.trim() || DEFAULT_OLLAMA_MODEL),
     ollamaBaseUrl: env.OLLAMA_BASE_URL?.trim() || "http://localhost:11434/v1",
     anthropicModel: env.ANTHROPIC_MODEL?.trim() || "claude-haiku-5-5",
     anthropicApiKey: env.ANTHROPIC_API_KEY?.trim() || "",

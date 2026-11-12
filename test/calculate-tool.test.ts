@@ -4,6 +4,7 @@ import { calculateTool } from "../src/tools/calculate.ts";
 import { readFileTool, shownSlice, CHUNK_CHARS } from "../src/tools/readFile.ts";
 import { Ledger, checkText } from "../src/provenance.ts";
 import { createGuard } from "../src/guard.ts";
+import { D, displayLossPercent } from "../src/calc/num.ts";
 
 const run = (tool: ReturnType<typeof calculateTool>, params: object) => tool.execute("id", params as never, undefined as never) as Promise<{ content: { text: string }[]; details: any }>;
 const withSource = (text: string) => {
@@ -114,4 +115,63 @@ test("read_file feeds the ledger with what the model was shown, across chunks", 
   assert.deepEqual(checkText("1,306,000", ledger).map((c) => c.cls), ["X"]); // cut at the edge: not yet shown in full
   await tool.execute("b", { path: "f.txt", offset: CHUNK_CHARS } as never, undefined as never);
   assert.deepEqual(checkText("1,306,000 and 2,278", ledger).map((c) => c.cls), ["S", "S"]);
+});
+
+// ---- display rounding must not distort the value (a rate shown as 0.1 instead of 10.3%) ----
+
+const marginCall = (avgPct: boolean) => ({
+  inputs: { op19: "1,306", op20: "509", op21: "2,112", sales19: "11,503", sales20: "11,303", sales21: "14,082" },
+  steps: [
+    { name: "margin19", expr: "op19 / sales19", dp: 1, pct: true },
+    { name: "margin20", expr: "op20 / sales20", dp: 1, pct: true },
+    { name: "margin21", expr: "op21 / sales21", dp: 1, pct: true },
+    { name: "avg_margin", expr: "(margin19 + margin20 + margin21) / 3", dp: 1, ...(avgPct ? { pct: true } : {}) },
+  ],
+});
+const marginSource = "Net sales 11,503 11,303 14,082 Operating income 1,306 509 2,112";
+
+test("a rate shown as a plain number with few decimals is reported to the model, with the fix", async () => {
+  const r = await run(calculateTool(withSource(marginSource)), marginCall(false));
+  const text = r.content[0].text;
+  assert.match(text, /avg_margin = 0\.1 /);
+  assert.match(text, /WARNING: step "avg_margin": shows 0\.1 but the exact value is 0\.102848862643; rounding changed it by 2\.8%/);
+  assert.match(text, /set pct:true/);
+  assert.equal(r.details.warnings.length, 1); // the three percent steps round by well under 1%
+  assert.match(r.details.steps[3].value, /^0\.10284886264/); // the exact value is still returned and logged
+  assert.equal(r.details.steps[3].shown, "0.1"); // the display itself is unchanged
+});
+
+test("the same call with pct:true on the average is clean", async () => {
+  const r = await run(calculateTool(withSource(marginSource)), marginCall(true));
+  assert.match(r.content[0].text, /avg_margin = 10\.3%/);
+  assert.doesNotMatch(r.content[0].text, /WARNING/);
+});
+
+test("rounding a small value to zero is reported; unrounded values and ordinary roundings are not", async () => {
+  const tool = () => calculateTool(withSource("a 4 b 10,000 c 1,234.567"));
+  const small = await run(tool(), { inputs: { a: "4", b: "10,000" }, steps: [{ name: "r", expr: "a / b", dp: 2 }] });
+  assert.match(small.content[0].text, /WARNING: step "r": shows 0\.00 but the exact value is 0\.0004; rounding changed it by 100\.0%/);
+  const plain = await run(tool(), { inputs: { a: "4", b: "10,000" }, steps: [{ name: "r", expr: "a / b" }] }); // no dp: 12 significant digits
+  assert.doesNotMatch(plain.content[0].text, /WARNING/);
+  const ordinary = await run(tool(), { inputs: { c: "1,234.567" }, steps: [{ name: "r", expr: "c", dp: 1 }] });
+  assert.doesNotMatch(ordinary.content[0].text, /WARNING/);
+});
+
+test("displayLossPercent: the 1% limit, percent display, zero and no-decimals cases", () => {
+  const x = new D("0.102848862643");
+  assert.equal(displayLossPercent(x, 1, false), "2.8");
+  assert.equal(displayLossPercent(x, 1, true), undefined); // 10.3 vs 10.2849: 0.2%
+  assert.equal(displayLossPercent(new D(0), 1, false), undefined);
+  assert.equal(displayLossPercent(x, undefined, false), undefined); // 12 significant digits
+  assert.equal(displayLossPercent(new D("1.01"), 0, false), undefined); // 0.99%: just inside
+  assert.equal(displayLossPercent(new D("0.99"), 0, false), "1.0"); // 1.01%: just outside
+  assert.equal(displayLossPercent(new D("-0.0004"), 2, false), "100.0"); // sign does not matter
+});
+
+test("a percent with no dp defaults to one decimal, and that rounding is checked too", async () => {
+  const tool = calculateTool(withSource("a 4 b 10,000"));
+  const r = await run(tool, { inputs: { a: "4", b: "10,000" }, steps: [{ name: "r", expr: "a / b", pct: true }] });
+  assert.match(r.content[0].text, /r = 0\.0%/);
+  assert.match(r.content[0].text, /WARNING: step "r": shows 0\.0% but the exact value is 0\.0004 \(a fraction\); rounding changed it by 100\.0%/);
+  assert.doesNotMatch(r.content[0].text, /set pct:true/); // already a percent: the advice is only about decimals
 });
