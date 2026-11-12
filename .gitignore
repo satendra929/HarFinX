@@ -1,0 +1,49 @@
+# --- Secrets and local environment ---
+.env
+.env.*
+!.env.example
+.npmrc
+*.pem
+*.key
+
+# --- Real financial data and harness runtime output ---
+# The workspace is the user's data folder; the harness creates it on first run.
+workspace/
+# Audit log: full questions, model output and file contents. Local only.
+audit/
+# Eval: FinanceBench data and gold answers (non-commercial licence) and per-run results/logs. Scripts and RUBRIC stay tracked.
+eval/data/
+eval/runs/
+logs/
+sessions/
+*.jsonl
+# Safety net against analyst files dropped outside workspace/ (csv/txt stay allowed for test fixtures)
+*.xlsx
+*.xlsm
+*.xls
+*.pdf
+*.docx
+
+# --- Dependencies, logs, build output ---
+node_modules/
+*.log
+coverage/
+.nyc_output/
+dist/
+build/
+*.tsbuildinfo
+
+# --- Tool config (personal or local only) ---
+*.local.*
+.claude/worktrees/
+.vscode/
+.idea/
+
+# --- OS and editor junk ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~
+*.tmp
+tmp/
