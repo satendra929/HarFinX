@@ -27,7 +27,7 @@ export function readFileTool(workspace: Workspace, onShown?: (path: string, text
     name: "read_file",
     label: "Read file",
     description:
-      "Read a UTF-8 text file (csv, txt, md, json) from the workspace folder. " +
+      "Read a UTF-8 text file (csv, txt, md, json) from the workspace folder (for a PDF use read_page). " +
       "`path` is relative to the workspace. Long files come back in chunks; " +
       "pass `offset` (a character position) to continue where the previous chunk ended.",
     parameters: {
@@ -42,13 +42,19 @@ export function readFileTool(workspace: Workspace, onShown?: (path: string, text
     execute: async (_toolCallId, params: { path: string; offset?: number }, signal) => {
       const offset = params.offset ?? 0;
       if (!Number.isInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer");
+      // Checked first: a PDF would otherwise fail on its size or its binary content with a confusing message.
+      if (typeof params.path === "string" && /\.pdf$/i.test(params.path)) throw new Error("this is a PDF: use read_page with a page number to read it, one page at a time");
 
       const text = await workspace.readText(params.path, { signal });
       if (offset >= text.length && text.length > 0) {
         return { content: [{ type: "text", text: `[offset ${offset} is past the end of the file (${text.length} characters)]` }], details: {} };
       }
       const end = Math.min(offset + CHUNK_CHARS, text.length);
-      onShown?.(params.path, shownSlice(text, offset, end));
+      try {
+        onShown?.(params.path, shownSlice(text, offset, end)); // a failure here only loses the record, never the read
+      } catch {
+        /* see above */
+      }
       let out = text.slice(offset, end);
       out +=
         end < text.length

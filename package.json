@@ -12,12 +12,15 @@
     "eval:prepare": "tsx eval/prepare.ts",
     "eval:run": "tsx eval/run.ts",
     "eval:provenance": "tsx eval/provenance-report.ts",
-    "eval:rebuild": "tsx eval/rebuild.ts"
+    "eval:rebuild": "tsx eval/rebuild.ts",
+    "eval:retrieval": "tsx eval/retrieval.ts",
+    "eval:filings": "tsx eval/filings.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
-    "decimal.js": "10.6.0"
+    "decimal.js": "10.6.0",
+    "unpdf": "2.1.0"
   },
   "devDependencies": {
     "@types/node": "22.19.1",

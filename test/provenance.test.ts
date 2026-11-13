@@ -142,3 +142,12 @@ test("label rules must not erase real figures: words that merely start like a mo
   // a date-like day followed by a decimal or percent is a figure, not a day
   assert.deepEqual(canon("May 5.5%"), ["5.5"]);
 });
+
+test("page and part references from filings are labels, not figures", () => {
+  const text = "[page 68 of 136 in filings/LOCKHEED_2021_10K.pdf] see page 68, part 2 of 3, p.68, pp. 66-68 and also pages 66-68 (10-K)";
+  assert.deepEqual(checkText(text, new Ledger()).map((c) => c.token.raw), []);
+  // real figures next to such labels are still found
+  const l = new Ledger();
+  l.addSource("a.pdf p.68", "Total current assets 19,815");
+  assert.deepEqual(checkText("Per page 68 of 136 (a.pdf p.68): total current assets were 19,815 and not 20,000.", l).map((c) => `${c.token.raw}=${c.cls}`), ["19,815=S", "20,000=X"]);
+});

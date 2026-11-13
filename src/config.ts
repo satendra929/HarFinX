@@ -6,6 +6,8 @@ export interface Config {
   provider: Provider;
   ollamaModel: string;
   ollamaBaseUrl: string;
+  /** The context window the harness assumes for local models, in tokens. Read from OLLAMA_CONTEXT_LENGTH, the same variable the Ollama server uses, so the two cannot drift apart. */
+  ollamaContext: number;
   anthropicModel: string;
   anthropicApiKey: string;
   workspaceDir: string;
@@ -15,6 +17,21 @@ export interface Config {
   /** Override of the provider's reasoning-history policy (src/reasoning.ts); undefined means the profile default. */
   reasoningHistory?: "drop" | "latest" | "keep";
   envFileFound: boolean;
+}
+
+export const DEFAULT_OLLAMA_CONTEXT = 16384;
+const MIN_CONTEXT = 2048;
+const MAX_CONTEXT = 1_048_576;
+
+/** Parses OLLAMA_CONTEXT_LENGTH: a whole number of tokens; empty or unset means the default. */
+export function parseContextLength(raw: string | undefined): number {
+  const text = raw?.trim();
+  if (!text) return DEFAULT_OLLAMA_CONTEXT;
+  const n = Number(text);
+  if (!/^\d+$/.test(text) || n < MIN_CONTEXT || n > MAX_CONTEXT) {
+    throw new Error(`OLLAMA_CONTEXT_LENGTH must be a whole number of tokens between ${MIN_CONTEXT} and ${MAX_CONTEXT} (got "${text}").`);
+  }
+  return n;
 }
 
 /** `overrides.model` (the --model flag) wins over OLLAMA_MODEL; either may be a short name such as "gemma". */
@@ -41,6 +58,7 @@ export function loadConfig(overrides: { model?: string } = {}): Config {
     provider,
     ollamaModel: resolveModel(overrides.model?.trim() || env.OLLAMA_MODEL?.trim() || DEFAULT_OLLAMA_MODEL),
     ollamaBaseUrl: env.OLLAMA_BASE_URL?.trim() || "http://localhost:11434/v1",
+    ollamaContext: parseContextLength(env.OLLAMA_CONTEXT_LENGTH),
     anthropicModel: env.ANTHROPIC_MODEL?.trim() || "claude-haiku-5-5",
     anthropicApiKey: env.ANTHROPIC_API_KEY?.trim() || "",
     workspaceDir: env.WORKSPACE_DIR?.trim() || "workspace",

@@ -20,6 +20,8 @@ export interface RecoverHooks {
   say(line: string): void;
   /** Model-written text shown as a last resort (the caller cleans it for the terminal). */
   showReasoning(text: string): void;
+  /** What to suggest when, after the retry, there is still no answer (it may depend on how much the model had tried). */
+  noAnswerHint?(): string;
 }
 
 /** Runs the recovery flow after `agent.prompt()`. Returns the reason when the question ended in a loop. */
@@ -62,7 +64,7 @@ export async function recoverReply(agent: Agent, h: RecoverHooks): Promise<{ stu
       if (shown) {
         h.say("[the model gave no answer text; showing its reasoning as is]");
         h.showReasoning(shown);
-      } else h.say("[the model returned no answer; ask again, or rephrase the question]");
+      } else h.say(`[the model returned no answer; ${h.noAnswerHint?.() ?? "ask again, or rephrase the question"}]`);
     }
     return {};
   }

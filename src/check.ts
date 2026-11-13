@@ -43,6 +43,54 @@ export function summarizeCheck(checked: Checked[]): CheckSummary {
   };
 }
 
+// A claim that the calculator was used: "the calculate tool", "calculator tool", "my calculate call", "calculator output",
+// "using/via/with (the) calculate", "called/ran calculate", a "Tool used: calculate" footer; names may be in backticks or
+// bold. "calculated as (A - B) / B" (a definition), "a calculator" (generic) and "recalculate" are not claims.
+const W = "[`*]*";
+const CALC_CLAIM = new RegExp(
+  `\\b(?:calculat(?:e|or|ion)${W}\\s+tool` +
+    `|calculat(?:e|or)${W}\\s+(?:call|output)` +
+    `|(?:using|used|with|via|by|through|from|called|ran|invoked|executed)\\s+(?:the\\s+)?${W}calculat(?:e|or)${W}(?![a-z])` +
+    `|tools?(?:\\s+used)?:\\s*${W}calculate\\b)`,
+  "i",
+);
+// Negations in the words just before a match ("I did not use the calculate tool", "Neither the calculate tool nor ...") ...
+const NEGATION = /\b(?:not|never|no|neither|nor|without|didn'?t|did\s+not|don'?t|haven'?t|hasn'?t|hadn'?t|wasn'?t|weren'?t|isn'?t|won'?t|cannot|can'?t|unable)\b[^.\n]{0,40}$/i;
+// ... and right after one ("The calculate tool was not used", "... was unavailable", "... wasn't called").
+const NEGATED_AFTER = new RegExp(
+  `^${W}(?:\\s+tool)?${W}\\s+(?:(?:was|were|is|are|has|have|had)\\s+(?:not|never|unavailable)|wasn'?t|weren'?t|isn'?t|hasn'?t|haven'?t|never|not\\s+(?:available|used|called|run|needed))`,
+  "i",
+);
+
+/**
+ * The phrase in which the answer claims to have used the calculate tool, or undefined. A negated mention ("I did not
+ * use the calculate tool", "the calculate tool was not used") is not a claim. Text inside code fences is ignored.
+ */
+export function calculationClaim(answer: string): string | undefined {
+  const text = answer.replace(/```[\s\S]*?```/g, " ");
+  for (const m of text.matchAll(new RegExp(CALC_CLAIM.source, "gi"))) {
+    const before = text.slice(Math.max(0, m.index! - 60), m.index!);
+    const after = text.slice(m.index! + m[0].length, m.index! + m[0].length + 40);
+    if (NEGATION.test(before) || NEGATED_AFTER.test(after)) continue;
+    return m[0].replace(/\s+/g, " ").trim();
+  }
+  return undefined;
+}
+
+/**
+ * The line to show when the answer says it used the calculate tool but none ran in this question, else undefined.
+ * Such an answer's derived figures were not computed by the harness: they come from the model's own arithmetic.
+ */
+export function calculationClaimLine(answer: string, calculationsRun: number): { text: string; phrase: string } | undefined {
+  if (calculationsRun > 0) return undefined;
+  const phrase = calculationClaim(answer);
+  if (!phrase) return undefined;
+  return {
+    phrase,
+    text: `[check] The answer says "${phrase}", but no calculation ran for this question: any figure it derived is the model's own arithmetic. Verify those figures, or ask again and require the calculate tool.`,
+  };
+}
+
 /** Checks one answer's text against the ledger. */
 export function checkAnswer(text: string, ledger: Ledger): CheckSummary {
   return summarizeCheck(checkText(text, ledger));

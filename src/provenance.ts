@@ -36,8 +36,11 @@ const ZERO_WIDTH = /[​-‏⁠﻿­]/g;
 const MONTHS = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\.?";
 // Things that look like numbers but are labels. Replaced by a space before extraction.
 const LABELS: RegExp[] = [
-  /[\w./\\-]+\.(?:txt|csv|md|json|jsonl)\b/gi, // file names such as fb-00001.txt
+  /[\w./\\-]+\.(?:txt|csv|md|json|jsonl|pdf)\b/gi, // file names such as fb-00001.txt or filings/ACME_2023_10K.pdf
   /\b(?:10-?[KQ]|8-?K|20-?F|S-1)\b/gi, // form names
+  /\bpages?\s+\d+\s+of\s+\d+\b/gi, // "page 68 of 136" (read_page headers); before the generic page pattern below
+  /\bparts?\s+\d+(?:\s+of\s+\d+)?\b/gi, // "part 2 of 3"
+  /\bpp?\.\s?\d+(?:\s*[-–]\s*\d+)?\b/gi, // "p.68", "pp. 66-68"
   /\b(?:FY|CY|Q|H)\s?'?\d{1,4}\b/gi, // FY2021, Q1, H2
   /\b\d[QH]\b/gi, // 1Q, 2H
   new RegExp(`\\b${MONTHS}\\s+\\d{1,2}(?!\\d|%|[.,]\\d)(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?`, "g"), // December 31, 2018 (case-sensitive, day not a figure)
@@ -124,13 +127,91 @@ function yearOrConstantReason(t: NumToken): string | undefined {
 
 // ---- ledger --------------------------------------------------------------------------------------
 
-interface Rec {
+/** Where in a source a figure was printed. Only records added with `SourceMeta` have one. */
+export interface Where {
+  file: string;
+  page?: number;
+  /** The original line the figure is on; a short snippet of the text around it when its line could not be found (`rowFound` false). */
+  row: string;
+  rowFound: boolean;
+  /** Index of the row in `pageLines`, when the source is a page. */
+  lineNo?: number;
+  /** Every line of the page the row is on (shared by all records of the page). */
+  pageLines?: readonly string[];
+  /** Which question of the chat showed it (1 for the first). */
+  q: number;
+  /** The page number printed on the page, when it was detected. */
+  printed?: string;
+}
+
+/** What the caller knows about the text it hands to `addSource`: enough to say where each figure was printed. */
+export interface SourceMeta {
+  file: string;
+  page?: number;
+  /** All lines of the whole page; `text` may be one part of it. */
+  pageLines?: readonly string[];
+  /** Index in `pageLines` of the first line of `text`. */
+  lineOffset?: number;
+  printed?: string;
+}
+
+export interface Rec {
   raw: string;
   decimals: number;
   percent: boolean;
   scale?: string;
   origin: "S" | "U";
   label: string;
+  where?: Where;
+}
+
+/**
+ * Whether a number written in an answer can be the source number `r` (the values are already equal: callers look the
+ * source numbers up by canonical value):
+ *  - it does not claim more decimals than the source has ("15.0" never matches a plain "15"),
+ *  - a percent figure matches only a percent or decimal source number (never a plain integer),
+ *  - a scale word only conflicts with a DIFFERENT scale word on the source number.
+ */
+export function tokenMatches(t: NumToken, r: Rec): boolean {
+  return t.decimals <= r.decimals && (!t.percent || r.percent || r.decimals > 0) && (!t.scale || !r.scale || t.scale === r.scale);
+}
+
+/** True for numbers that are not figures at all: list numbers, bare years and the usual constants. */
+export function isNonFigure(t: NumToken): boolean {
+  return Boolean(nonFigureReason(t) || yearOrConstantReason(t));
+}
+
+/**
+ * The original line each token is on (see Ledger.add). The text is normalised as a whole, which can remove a newline
+ * (a label such as "December\n31" or "page\n12" is blanked), so a line number counted in the normalised text drifts.
+ * Instead each ORIGINAL line is read on its own and the two token sequences, both in text order, are matched forward:
+ * a token takes the next line token with the same text and value. A token with no such twin (a scale word on the next
+ * line joined it) gets a snippet and does not move the position. Returns undefined if anything goes wrong: locating is
+ * a nicety and must never stop a figure from being recorded.
+ */
+function locateRows(text: string, norm: string, tokens: NumToken[], meta: SourceMeta, q: number): Where[] | undefined {
+  try {
+    const orig = text.split("\n");
+    const flat: { k: number; t: NumToken }[] = [];
+    orig.forEach((line, k) => {
+      for (const t of extractNumbers(normalise(line))) flat.push({ k, t });
+    });
+    let p = 0; // next unmatched entry of `flat`
+    return tokens.map((t): Where => {
+      let at = p;
+      while (at < flat.length && !(flat[at].t.raw === t.raw && flat[at].t.canon === t.canon)) at++;
+      const base = { file: meta.file, page: meta.page, q, printed: meta.printed };
+      if (at >= flat.length) {
+        const snippet = norm.slice(Math.max(0, t.index - 40), t.index + t.raw.length + 40).replace(/\s+/g, " ").trim();
+        return { ...base, row: snippet, rowFound: false };
+      }
+      p = at + 1;
+      const k = flat[at].k;
+      return { ...base, row: orig[k].trim(), rowFound: true, lineNo: meta.pageLines ? (meta.lineOffset ?? 0) + k : undefined, pageLines: meta.pageLines };
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 interface CalcRec {
@@ -143,21 +224,33 @@ interface CalcRec {
 export class Ledger {
   private byCanon = new Map<string, Rec[]>();
   private calcs: CalcRec[] = [];
+  private q = 0; // questions asked in this chat so far
 
-  private add(origin: "S" | "U", label: string, text: string): void {
-    for (const t of extractNumbers(normalise(text))) {
+  private add(origin: "S" | "U", label: string, text: string, meta?: SourceMeta): void {
+    const norm = normalise(text);
+    const tokens = extractNumbers(norm);
+    const located = meta ? locateRows(text, norm, tokens, meta, this.q) : undefined;
+    tokens.forEach((t, i) => {
+      const where = located?.[i];
       const list = this.byCanon.get(t.canon) ?? [];
-      if (list.some((r) => r.raw === t.raw && r.label === label && r.origin === origin)) continue; // chunks overlap at their edges
-      list.push({ raw: t.raw, decimals: t.decimals, percent: t.percent, scale: t.scale, origin, label });
+      // chunks overlap at their edges; two different rows with the same figure are kept apart by their row text
+      if (list.some((r) => r.raw === t.raw && r.label === label && r.origin === origin && r.where?.row === where?.row)) return;
+      list.push({ raw: t.raw, decimals: t.decimals, percent: t.percent, scale: t.scale, origin, label, where });
       this.byCanon.set(t.canon, list);
-    }
+    });
   }
-  /** Text from the source that the model was actually shown (footers excluded by the caller). */
-  addSource(label: string, text: string): void {
-    this.add("S", label, text);
+  /** Text from the source that the model was actually shown (footers excluded by the caller). With `meta`, each figure also remembers its row. */
+  addSource(label: string, text: string, meta?: SourceMeta): void {
+    this.add("S", label, text, meta);
   }
+  /** The user's message at the start of a question; it also counts the question. */
   addUser(text: string): void {
+    this.q++;
     this.add("U", "user message", text);
+  }
+  /** Which question of the chat is being answered (1 for the first). */
+  get question(): number {
+    return this.q;
   }
   /** A calculate step result: `full` is the unrounded value, `shown` what the tool told the model to quote. */
   addCalc(name: string, full: string, shown: string, pct: boolean): void {
@@ -166,6 +259,7 @@ export class Ledger {
   reset(): void {
     this.byCanon.clear();
     this.calcs = [];
+    this.q = 0;
   }
   get size(): number {
     return this.byCanon.size + this.calcs.length;
@@ -182,17 +276,16 @@ export class Ledger {
   }
 
   /**
-   * A token matches a source/user number when the value is equal (sign ignored) and:
-   *  - it does not claim more decimals than the source has ("15.0" never matches a plain "15"),
-   *  - a percent figure matches only a percent or decimal source number (never a plain integer),
-   *  - a scale word only conflicts with a DIFFERENT scale word on the source number: "$7,453 million" is the
-   *    source's "7,453" plus a unit label (statements state their scale in a header), but "$5.5 million" does
-   *    not match a source "$5.5 billion".
+   * A token matches a source/user number when the value is equal (sign ignored) and `tokenMatches` agrees: "$7,453
+   * million" is the source's "7,453" plus a unit label (statements state their scale in a header), but "$5.5 million"
+   * does not match a source "$5.5 billion".
    */
   find(t: NumToken): Rec | undefined {
-    return (this.byCanon.get(t.canon) ?? []).find(
-      (r) => t.decimals <= r.decimals && (!t.percent || r.percent || r.decimals > 0) && (!t.scale || !r.scale || t.scale === r.scale),
-    );
+    return (this.byCanon.get(t.canon) ?? []).find((r) => tokenMatches(t, r));
+  }
+  /** Every source or user number the token matches, in the order they were recorded (`find` returns the first of these). */
+  findAll(t: NumToken): Rec[] {
+    return (this.byCanon.get(t.canon) ?? []).filter((r) => tokenMatches(t, r));
   }
 }
 

@@ -47,12 +47,19 @@ export function createGuard(opts: GuardOptions) {
   let calls = 0;
   let totalChars = 0;
   let tripped: string | undefined;
+  let blockedBy: string | undefined; // why the first call of this question was refused, if one was
 
   return {
     startRun(): void {
       calls = 0;
       totalChars = 0;
       tripped = undefined;
+      blockedBy = undefined;
+    },
+
+    /** Why a tool call of this question was refused (a limit, not a failure), if any. */
+    get blocked(): string | undefined {
+      return blockedBy;
     },
 
     /** Why the run must stop, if a limit was hit. */
@@ -60,12 +67,17 @@ export function createGuard(opts: GuardOptions) {
       return tripped;
     },
 
+    /** How many tool calls this question has started. Routine calls are not logged here (the CLI shows them as dim lines); only limits are. */
+    get calls(): number {
+      return calls;
+    },
+
     onToolStart(name: string, args: unknown): void {
       calls++;
-      opts.log(`tool call ${calls}/${opts.maxCallsPerRun}: ${safeForLog(name, 60)} ${safeForLog(args)}`);
       opts.onEvent?.({ kind: "call", n: calls, max: opts.maxCallsPerRun, tool: name });
       if (calls > opts.maxCallsPerRun && !tripped) {
         tripped = `tool-call limit reached (${opts.maxCallsPerRun} per question)`;
+        opts.log(`stopping this question: ${tripped}; the call to ${safeForLog(name, 60)} is not run`);
         opts.onEvent?.({ kind: "tripped", reason: tripped });
       }
     },
@@ -76,6 +88,7 @@ export function createGuard(opts: GuardOptions) {
         reason = `tool output limit reached (${opts.maxTotalChars} characters per question)`;
       }
       if (!reason) return undefined;
+      blockedBy ??= reason;
       opts.log(`blocked ${safeForLog(ctx.toolCall.name, 60)}: ${reason}`);
       opts.onEvent?.({ kind: "blocked", tool: ctx.toolCall.name, reason });
       return { block: true, reason, terminate: true };
@@ -87,6 +100,7 @@ export function createGuard(opts: GuardOptions) {
         if (part.type !== "text") return part;
         let text = part.text;
         if (text.length > opts.maxOutputChars) {
+          opts.log(`${safeForLog(ctx.toolCall?.name, 60)} result cut at ${opts.maxOutputChars} of ${text.length} characters`);
           opts.onEvent?.({ kind: "truncated", tool: ctx.toolCall?.name, maxChars: opts.maxOutputChars, originalChars: text.length });
           text = text.slice(0, opts.maxOutputChars) + `\n[output truncated at ${opts.maxOutputChars} characters]`;
           truncated = true;

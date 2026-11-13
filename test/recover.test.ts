@@ -13,7 +13,7 @@ const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0
 const asst = (content: object[], stopReason: string) => ({ role: "assistant", content, api: "openai-completions", provider: "any", model: "fake", usage, stopReason, timestamp: Date.now() });
 const tick = () => new Promise((r) => setImmediate(r));
 
-function harness(script: string[], opts: { canSwitchThinkingOff?: boolean } = {}) {
+function harness(script: string[], opts: { canSwitchThinkingOff?: boolean; noAnswerHint?: () => string } = {}) {
   const log = { requests: 0, noThinkAtRequest: [] as boolean[], toolRuns: 0, events: [] as string[], said: [] as string[], shown: [] as string[] };
   let noThink = false;
   let halted = false;
@@ -66,6 +66,7 @@ function harness(script: string[], opts: { canSwitchThinkingOff?: boolean } = {}
     record: (type: string) => void log.events.push(type),
     say: (line: string) => void log.said.push(line),
     showReasoning: (t: string) => void log.shown.push(t),
+    noAnswerHint: opts.noAnswerHint,
   };
   const ask = async () => {
     await agent.prompt("question");
@@ -109,6 +110,11 @@ test("still no answer after the one retry: never a second retry; the reasoning t
   assert.equal(none.log.requests, 2);
   assert.deepEqual(none.log.shown, []);
   assert.match(none.log.said.at(-1)!, /returned no answer/);
+  assert.equal(none.log.said.at(-1), "[the model returned no answer; ask again, or rephrase the question]"); // no hook: the default advice
+
+  const hinted = harness(["empty", "empty"], { noAnswerHint: () => "it used 7 of 8 tool calls without reaching an answer" });
+  await hinted.ask();
+  assert.equal(hinted.log.said.at(-1), "[the model returned no answer; it used 7 of 8 tool calls without reaching an answer]");
 });
 
 test("a looping reply (tool calls or reasoning in circles) is retried once; nothing from it runs", async () => {

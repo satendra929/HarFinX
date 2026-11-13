@@ -17,7 +17,28 @@ export interface Workspace {
   readonly root: string;
   /** Read a UTF-8 text file by path relative to the workspace root. */
   readText(rel: string, opts?: ReadOptions): Promise<string>;
+  /** Read a file's raw bytes (for formats such as PDF). Same path checks as readText; default limit 50 MB. */
+  readBytes(rel: string, opts?: ReadOptions): Promise<Buffer>;
+  /** The files in the workspace (see listFiles). */
+  list(opts?: ListOptions): FileListing;
 }
+
+export interface ListOptions {
+  maxEntries?: number;
+  maxDepth?: number;
+}
+export interface FileEntry {
+  path: string; // relative, forward slashes
+  size: number;
+}
+export interface FileListing {
+  files: FileEntry[];
+  truncated: boolean;
+}
+export const LIST_LIMITS = { maxEntries: 100, maxDepth: 4, maxVisited: 5_000 };
+
+export const DEFAULT_TEXT_MAX_BYTES = 1_000_000;
+export const DEFAULT_BYTES_MAX_BYTES = 50_000_000;
 
 // One message for "missing" and "outside", so the model cannot probe what exists elsewhere.
 const denied = () => new Error("not found or not allowed");
@@ -94,36 +115,95 @@ export function openWorkspace(
     }
   }
 
+  // The one checked path to a file's bytes: every read goes through here, so every path attack is blocked once.
+  const rootDir: string = root; // validated above (a nested function does not keep the narrowing of `root`)
+  async function readChecked(rel: string, signal: AbortSignal | undefined, maxBytes: number): Promise<Buffer> {
+    signal?.throwIfAborted();
+    checkRelative(rel);
+    const target = path.resolve(rootDir, rel);
+    if (!isInside(rootDir, target)) throw denied();
+    const real = realOrNull(target); // follows symlinks/junctions
+    if (!real || !isInside(rootDir, real)) throw denied();
+    // Residual risk: a path swapped between this check and open (TOCTOU). Not reachable with
+    // read-only tools; revisit when a write or shell tool exists.
+    let size: number;
+    try {
+      const st = fs.statSync(real);
+      if (!st.isFile()) throw denied(); // directories, pipes, devices
+      size = st.size;
+    } catch {
+      throw denied();
+    }
+    if (size > maxBytes) throw new Error(`file too large (${size} bytes, limit ${maxBytes})`);
+    const buf = Buffer.alloc(size);
+    const fh = await fs.promises.open(real, "r");
+    try {
+      let got = 0;
+      while (got < size) {
+        const { bytesRead } = await fh.read(buf, got, size - got, got);
+        if (bytesRead === 0) break; // the file shrank after the size check: return what exists, never zero padding
+        got += bytesRead;
+      }
+      signal?.throwIfAborted();
+      return got === size ? buf : buf.subarray(0, got);
+    } finally {
+      await fh.close();
+    }
+  }
+
   return {
     root,
-    async readText(rel, { signal, maxBytes = 1_000_000 } = {}) {
-      signal?.throwIfAborted();
-      checkRelative(rel);
-      const target = path.resolve(root, rel);
-      if (!isInside(root, target)) throw denied();
-      const real = realOrNull(target); // follows symlinks/junctions
-      if (!real || !isInside(root, real)) throw denied();
-      // Residual risk: a path swapped between this check and open (TOCTOU). Not reachable with
-      // read-only tools; revisit when a write or shell tool exists.
-      let size: number;
-      try {
-        const st = fs.statSync(real);
-        if (!st.isFile()) throw denied(); // directories, pipes, devices
-        size = st.size;
-      } catch {
-        throw denied();
-      }
-      if (size > maxBytes) throw new Error(`file too large (${size} bytes, limit ${maxBytes})`);
-      const buf = Buffer.alloc(size);
-      const fh = await fs.promises.open(real, "r");
-      try {
-        await fh.read(buf, 0, size, 0);
-      } finally {
-        await fh.close();
-      }
-      signal?.throwIfAborted();
+    async readText(rel, { signal, maxBytes = DEFAULT_TEXT_MAX_BYTES } = {}) {
+      const buf = await readChecked(rel, signal, maxBytes);
       if (buf.includes(0)) throw new Error("binary file not supported");
       return buf.toString("utf8");
+    },
+    readBytes(rel, { signal, maxBytes = DEFAULT_BYTES_MAX_BYTES } = {}) {
+      return readChecked(rel, signal, maxBytes);
+    },
+    list({ maxEntries = LIST_LIMITS.maxEntries, maxDepth = LIST_LIMITS.maxDepth } = {}) {
+      // Regular files only. Symlinks and junctions are skipped, never followed (a link could point outside, and even
+      // its size would leak). Dot-names are hidden. Names that the read path would refuse are left out, so everything
+      // listed can be read, and no control characters reach the model or the terminal.
+      const files: FileEntry[] = [];
+      let visited = 0;
+      let cut = false;
+      const walk = (dir: string, prefix: string, depth: number) => {
+        let entries: fs.Dirent[];
+        try {
+          entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const e of entries) {
+          if (++visited > LIST_LIMITS.maxVisited) {
+            cut = true;
+            return;
+          }
+          if (e.name.startsWith(".") || e.isSymbolicLink()) continue;
+          const rel = prefix ? `${prefix}/${e.name}` : e.name;
+          try {
+            checkRelative(rel);
+          } catch {
+            continue;
+          }
+          const full = path.join(dir, e.name);
+          if (e.isDirectory()) {
+            if (depth < maxDepth) walk(full, rel, depth + 1);
+            else cut = true;
+          } else if (e.isFile()) {
+            try {
+              const st = fs.lstatSync(full);
+              if (st.isFile()) files.push({ path: rel, size: st.size });
+            } catch {
+              /* vanished while listing */
+            }
+          }
+        }
+      };
+      walk(rootDir, "", 1);
+      files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+      return { files: files.slice(0, maxEntries), truncated: cut || files.length > maxEntries };
     },
   };
 }
