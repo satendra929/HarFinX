@@ -17,7 +17,7 @@ import { recoverReply } from "./recover.ts";
 import { reasoningProfile } from "./reasoning.ts";
 import { REPLY_CHARS_PER_CAP_TOKEN, guardRunaway } from "./runaway.ts";
 import { friendlyError } from "./errors.ts";
-import { answerTextSince, calculationClaimLine, checkLine, summarizeCheck } from "./check.ts";
+import { answerTextSince, checkLine, summarizeCheck } from "./check.ts";
 import { createDocStore } from "./documents/store.ts";
 import { readPageTool } from "./tools/readPage.ts";
 import { searchTool } from "./tools/search.ts";
@@ -155,7 +155,6 @@ async function main(): Promise<void> {
   // they reconstruct the exact context of every model call.
   let contextWarned = false; // one context warning per question
   let calcInputs: string[] = []; // the printed numbers given to the calculator during this question
-  let calcRuns = 0; // calculate calls that returned a result during this question
   agent.subscribe((e) => {
     if (e.type === "message_end" && e.message.role !== "user") record("message", { message: e.message }); // user text is in run_start
     if (e.type === "message_end" && e.message.role === "assistant" && !contextWarned) {
@@ -182,9 +181,8 @@ async function main(): Promise<void> {
       const line = e.toolName === "search" && !e.isError ? searchResultLine(e.result?.details) : undefined;
       if (line) println(dim(line));
       // The printed numbers the model gave the calculator: the Sources block shows where they come from.
-      if (e.toolName === "calculate" && !e.isError) {
-        calcRuns++;
-        if (Array.isArray(e.result?.details?.inputs)) for (const i of e.result.details.inputs) if (typeof i?.literal === "string") calcInputs.push(i.literal);
+      if (e.toolName === "calculate" && !e.isError && Array.isArray(e.result?.details?.inputs)) {
+        for (const i of e.result.details.inputs) if (typeof i?.literal === "string") calcInputs.push(i.literal);
       }
       return;
     }
@@ -220,7 +218,6 @@ async function main(): Promise<void> {
     guard.startRun();
     lineOpen = false;
     calcInputs = [];
-    calcRuns = 0;
     contextWarned = false;
     userAborted = false;
     runawayReason = undefined;
@@ -270,17 +267,6 @@ async function main(): Promise<void> {
       } catch (err) {
         record("provenance_error", { error: err instanceof Error ? err.message : String(err) });
         console.log(dim("[check] could not run for this answer"));
-      }
-
-      // The answer says it used the calculate tool but none ran: warn (own try; never changes the answer).
-      try {
-        const claim = calculationClaimLine(answerTextSince(agent.state.messages), calcRuns);
-        if (claim) {
-          record("calc_claim_without_run", { phrase: claim.phrase });
-          console.log(warnLine(claim.text));
-        }
-      } catch (err) {
-        record("calc_claim_error", { error: err instanceof Error ? err.message : String(err) });
       }
 
       // Where the answer's figures appear in the pages the model read (src/sources.ts). Its own try: a failure here

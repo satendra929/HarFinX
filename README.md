@@ -46,7 +46,6 @@ Two models have short names: `gemma` (the default) and `qwen`; any installed Oll
 
 - **`[check]` line.** A dim line means every figure traced to your file, your question or the calculator; a yellow line lists the ones that did not. It tells you a figure is traceable, not that it is right, and it only warns.
 - **Sources.** Under it, a dim block shows where the figures appear: file, page, heading, units, column heading and the matching rows. It is a number match only, so confirm on the page.
-- **Calculator warnings.** If an answer says it used the calculator but none ran, a yellow line says so.
 - **`context N%`.** The last line shows how full the conversation is; near the limit it suggests `/new`.
 
 ## Safety and privacy
