@@ -48,29 +48,35 @@ test("end to end: a figure read from a page is sourced with file, page, title, u
   assert.equal(e.period, "As of January 28, 2023  |  Jan 28, 2023  |  Jan 29, 2022");
   assert.equal(e.columns, "As of January 28, 2023  |  Jan 28, 2023  |  Jan 29, 2022"); // two date cells make it the column heading (shown verbatim, never matched to a column)
   assert.equal(e.current, true);
-  assert.deepEqual(e.rows.map((x) => [x.row, x.figures.map((f) => f.raw), describePositions(x.figures)]), [["Merchandise inventories  |  5,818  |  5,923", ["5,818"], "1st of 2 numbers"]]);
+  assert.deepEqual(e.rows.map((x) => [x.row, x.figures.map((f) => f.raw), describePositions(x.figures)]), [["Merchandise inventories  |  5,818  |  5,923", ["5,818"], "1st of 2 cells"]]);
 });
 
-test("formatSources: fixed disclaimer, an entry line, and the row with the figure marked", async () => {
+test("formatSources: a short heading line, the page line, then units and column headings with the figure marked under its column", async () => {
   const l = new Ledger();
   l.addUser("q");
   await read(l, [["Consolidated Balance Sheets", "(in millions)", "|  2023  |  2022", "Merchandise inventories  |  5,818  |  5,923"].join("\n")], 1);
   const lines = formatSources(buildSources(answerTokens("Inventories: 5,818.", l), [], l));
-  assert.equal(lines[0], DISCLAIMER);
-  assert.equal(lines[1], "  filings/a.pdf  p.1  Consolidated Balance Sheets  (in millions)");
-  assert.equal(lines[2], "    Merchandise inventories | [5,818] | 5,923     1st of 2 numbers     columns: | 2023 | 2022");
-  assert.equal(lines.length, 3);
+  assert.deepEqual(lines, [
+    DISCLAIMER,
+    "  filings/a.pdf  p.1  Consolidated Balance Sheets",
+    "    (in millions)              2023    2022",
+    "    Merchandise inventories  [5,818]  5,923",
+  ]);
 });
 
-test("two figures of the answer on one row are one row with both marked and both positions said", async () => {
+test("two figures of the answer on one row are one row with both marked; the period is shown once, the headings stay aligned", async () => {
   const l = new Ledger();
   l.addUser("q");
   await read(l, [BS], 1);
   const r = buildSources(answerTokens("Inventories were $5,818 million, against $5,923 million before.", l), [], l);
   assert.equal(r.entries[0].rows.length, 1);
   const lines = formatSources(r);
-  assert.equal(lines[2], "    Merchandise inventories | [5,818] | [5,923]     1st and 2nd of 2 numbers     columns: As of January 28, 2023 | Jan 28, 2023 | Jan 29, 2022");
-  assert.equal(describePositions([{ raw: "a", position: { at: 1, of: 3 } }, { raw: "b", position: { at: 3, of: 3 } }]), "1st and 3rd of 3 numbers");
+  assert.deepEqual(lines.slice(2), [
+    "    (in millions)  ·  As of January 28, 2023",
+    "                              Jan 28, 2023   Jan 29, 2022",
+    "    Merchandise inventories         [5,818]        [5,923]",
+  ]);
+  assert.equal(describePositions([{ raw: "a", position: { at: 1, of: 3 } }, { raw: "b", position: { at: 3, of: 3 } }]), "1st and 3rd of 3 cells");
   assert.equal(describePositions([{ raw: "a", position: { at: 1, of: 2 } }, { raw: "b", position: { at: 2, of: 3 } }]), "1st of 2, 2nd of 3");
   assert.equal(describePositions([{ raw: "a" }]), undefined);
 });
@@ -208,8 +214,67 @@ test("a figure that also appears inside a longer number is marked where it reall
   const rows = ["Heading", "Revenue | 1,250 | 250", "Net loss | −473 | 120.5"];
   l.addSource("f p.1", rows.join("\n"), { file: "f.pdf", page: 1, pageLines: rows, lineOffset: 0 });
   const lines = formatSources(buildSources([...toks("250"), ...toks("-473")], [], l));
-  assert.ok(lines.includes("    Revenue | 1,250 | [250]     2nd of 2 numbers"), lines.join("\n"));
-  assert.ok(lines.some((x) => x.startsWith("    Net loss | [-473] | 120.5")), lines.join("\n"));
+  assert.deepEqual(lines.slice(2), ["    Revenue    1,250    [250]   2nd of 2 cells", "    Net loss   [-473]  120.5   1st of 2 cells"]); // each figure marked in its own cell, the unmarked cells lined up under them
+});
+
+const THREE_M = ["Disaggregated revenue information", "Year ended December 31", "(Millions)  |  2022  |  2021  |  2020", "Other Consumer  |  —  |  (1,011)  |  1", "Total Company  |  $ 34,229  |  $ 35,355  |  $ 32,184", "Worldwide  |  $ 34,229  |  $ 35,355  |  $ 32,184"];
+function threeM(answer: string, opts?: Parameters<typeof formatSources>[1]): string[] {
+  const l = new Ledger();
+  l.addUser("q");
+  l.addSource("f p.60", THREE_M.join("\n"), { file: "3M.pdf", page: 60, printed: "60", pageLines: THREE_M, lineOffset: 0 });
+  return formatSources(buildSources(answerTokens(answer, l), [], l), opts);
+}
+
+test("a units line that is also the column heading line is shown once as units, and the period once; the printed page shows only when it differs", () => {
+  const lines = threeM("Net sales were $34,229 million.");
+  assert.deepEqual(lines, [
+    DISCLAIMER,
+    "  3M.pdf  p.60  Disaggregated revenue information",
+    "    (Millions)  ·  Year ended December 31",
+    "                                    2022       2021       2020",
+    "    Total Company = Worldwide  [$ 34,229]  $ 35,355   $ 32,184",
+  ]);
+});
+
+test("a dash cell is a cell: the column of a figure next to it is right, and the headings still line up", () => {
+  const lines = threeM("Other Consumer was (1,011).");
+  assert.equal(lines.at(-1), "    Other Consumer      —  [(1,011)]     1");
+  assert.equal(cellPosition("Other | — | (1,011) | 1", "(1,011)"), "2nd of 3 cells");
+  assert.equal(cellPosition("Other | – | 5 | 1", "1"), "3rd of 3 cells");
+});
+
+test("rows with the same figures under different labels become one row; different figures stay apart", () => {
+  const lines = threeM("Sales $34,229, and 1 for other, (1,011).");
+  assert.equal(lines.filter((x) => x.includes("Total Company")).length, 1);
+  assert.ok(lines.some((x) => x.includes("Total Company = Worldwide")));
+  assert.ok(lines.some((x) => x.startsWith("    Other Consumer")));
+});
+
+test("the page reference can be a terminal link; a link with control characters is dropped; nothing else changes", () => {
+  const plain = threeM("Net sales were $34,229 million.");
+  const withLink = threeM("Net sales were $34,229 million.", { link: (f, p) => `file:///x/${f}#page=${p}` });
+  assert.equal(withLink[1], "  3M.pdf  \u001b]8;;file:///x/3M.pdf#page=60\u001b\\p.60\u001b]8;;\u001b\\  Disaggregated revenue information");
+  assert.deepEqual(withLink.filter((_, i) => i !== 1), plain.filter((_, i) => i !== 1));
+  assert.deepEqual(threeM("Net sales were $34,229 million.", { link: () => "file:///x\u001b[2J" }), plain);
+  assert.deepEqual(threeM("Net sales were $34,229 million.", { link: () => undefined }), plain);
+});
+
+test("a heading line without a label cell (2022 | 2021) lines up over the figures, and cells that are only a currency sign are not columns", () => {
+  const rows = ["Balance sheet", "2022  |  2021", "Cash  |  $  |  4,835  |  $  |  2,535", "Short-term investments  |  1,020  |  1,073"];
+  const l = new Ledger();
+  l.addUser("q");
+  l.addSource("f p.1", rows.join("\n"), { file: "a.pdf", page: 1, pageLines: rows, lineOffset: 0 });
+  const lines = formatSources(buildSources(answerTokens("4,835 and 1,020", l), [], l));
+  assert.deepEqual(lines.slice(2), ["                              2022    2021", "    Cash                    [4,835]  2,535", "    Short-term investments  [1,020]  1,073"]);
+});
+
+test("rows with a different number of cells than the headings are shown unaligned, with their position, and the headings as text", () => {
+  const rows = ["Statement", "|  2022  |  2021", "Revenue  |  5,818  |  5,923  |  1,111", "Other  |  5,818  |  2"];
+  const l = new Ledger();
+  l.addUser("q");
+  l.addSource("f p.1", rows.join("\n"), { file: "a.pdf", page: 1, pageLines: rows, lineOffset: 0 });
+  const lines = formatSources(buildSources(answerTokens("5,818", l), [], l));
+  assert.deepEqual(lines.slice(2), ["    columns: 2022   2021", "    Revenue  [5,818]  5,923   1,111   1st of 3 cells", "    Other  [5,818]  2   1st of 2 cells"]);
 });
 
 test("more rows than the limit on one page: the rest are counted, not silently dropped", async () => {
@@ -330,14 +395,14 @@ test("records without a recorded row (eval replay style) give no entries and no 
 });
 
 test("cellPosition: the figure's place among the row's numbers is a fact; other rows say nothing", () => {
-  assert.equal(cellPosition("Revenue | 5,818 | 5,923", "5,818"), "1st of 2 numbers");
-  assert.equal(cellPosition("Revenue | 5,818 | 5,923", "5,923"), "2nd of 2 numbers");
-  assert.equal(cellPosition("Revenue | 1 | 2 | 3 | 4,444", "4,444"), "4th of 4 numbers");
-  assert.equal(cellPosition("Revenue | 11 | 12 | 13", "12"), "2nd of 3 numbers");
+  assert.equal(cellPosition("Revenue | 5,818 | 5,923", "5,818"), "1st of 2 cells");
+  assert.equal(cellPosition("Revenue | 5,818 | 5,923", "5,923"), "2nd of 2 cells");
+  assert.equal(cellPosition("Revenue | 1 | 2 | 3 | 4,444", "4,444"), "4th of 4 cells");
+  assert.equal(cellPosition("Revenue | 11 | 12 | 13", "12"), "2nd of 3 cells");
   assert.equal(cellPosition("Revenue | 5,818", "5,818"), undefined); // one number: nothing to place
   assert.equal(cellPosition("Revenue was 5,818 in 2023", "5,818"), undefined); // prose
   assert.equal(cellPosition("Revenue | 5,818 | 5,923", "9,999"), undefined);
-  assert.equal(cellPosition("Revenue | $ 5,818 | (203)", "(203)"), "2nd of 2 numbers");
+  assert.equal(cellPosition("Revenue | $ 5,818 | (203)", "(203)"), "2nd of 2 cells");
 });
 
 test("formatSources: unsafe characters in file names and rows are removed; long rows are cut around the figure; a missing figure is appended", () => {

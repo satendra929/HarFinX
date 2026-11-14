@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { loadConfig } from "./config.ts";
@@ -22,9 +23,11 @@ import { createDocStore } from "./documents/store.ts";
 import { readPageTool } from "./tools/readPage.ts";
 import { searchTool } from "./tools/search.ts";
 import { listFilesTool } from "./tools/listFiles.ts";
-import { contextMeter, contextWarning } from "./contextFit.ts";
+import { contextMeter, contextWarning, promptTokens } from "./contextFit.ts";
+import { describeContext, makeContextView, trimLine } from "./context.ts";
+import { CONTEXT_MODES, resolveContext, type ContextMode } from "./contextSettings.ts";
 import { contextMismatchWarning, serverContext } from "./ollamaContext.ts";
-import { budgetNote, callLimitMessage, emptyAnswerHint, loopMessage, searchResultLine, toolLine } from "./feedback.ts";
+import { budgetNote, callLimitMessage, emptyAnswerHint, loopMessage, oneLine, searchResultLine, toolLine } from "./feedback.ts";
 
 const SYSTEM_PROMPT =
   "You are HarFinX, a careful assistant for financial analysts. " +
@@ -44,6 +47,8 @@ const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 // so a yellow [guard] line can only come from the harness.
 const guardLine = (s: string) => `\x1b[33m[guard] ${s}\x1b[0m`;
 const warnLine = (s: string) => `\x1b[33m${s}\x1b[0m`; // yellow, like guard lines: model text cannot produce it
+// Clickable page references (OSC 8 links) only in terminals known to support them; elsewhere the escape codes would print as junk.
+const linkSupported = !!process.stdout.isTTY && !!(process.env.WT_SESSION || process.env.TERM_PROGRAM === "vscode");
 
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
@@ -77,6 +82,14 @@ async function main(): Promise<void> {
       auditError = err instanceof Error ? err.message : String(err);
       agent.abort();
     }
+  }
+
+  // A file:// link to a file of the workspace, at the cited page (PDF viewers that read #page open there). Never outside the workspace.
+  function pageLink(file: string, page: number | undefined): string | undefined {
+    const abs = path.resolve(workspace.root, file);
+    const rel = path.relative(workspace.root, abs);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
+    return pathToFileURL(abs).href + (page !== undefined ? `#page=${page}` : "");
   }
 
   // Progress lines (tool calls, guard actions) start on a fresh line even when answer text is still streaming.
@@ -122,8 +135,20 @@ async function main(): Promise<void> {
     calculateTool(ledger, cfg.calcShape),
   ];
 
+  // What the model is shown of the earlier conversation (src/context.ts): a view only; the stored conversation and the
+  // audit log stay complete. The level can be changed in chat with /context.
+  let contextMode = cfg.context.mode;
+  let contextByCommand = false;
+  const contextNow = () => resolveContext({ mode: contextMode, overrides: cfg.context.overrides }, agent.state.model.contextWindow);
+  const view = makeContextView({
+    window: () => agent.state.model.contextWindow,
+    settings: (window) => resolveContext({ mode: contextMode, overrides: cfg.context.overrides }, window),
+    onReport: (r) => record(r.error ? "context_error" : "context_compacted", r as unknown as Record<string, unknown>),
+  });
+
   const agent = new Agent({
     initialState: { systemPrompt: SYSTEM_PROMPT, model, tools },
+    transformContext: view.transform,
     streamFn: (m, c, o) => models.streamSimple(m, c, o), // reads the current `models`, so /model can swap it
     beforeToolCall: guard.beforeToolCall,
     afterToolCall: guard.afterToolCall,
@@ -147,6 +172,7 @@ async function main(): Promise<void> {
     reasoning: { history: reasoning.history, thinkingOffSwitch: reasoning.thinkingOff ?? null },
     tools: tools.map((t) => t.name),
     limits: DEFAULT_LIMITS,
+    context: { mode: contextMode, level: contextNow().level, window: model.contextWindow, knobs: contextNow().knobs, overridden: contextNow().overridden },
     systemPrompt: SYSTEM_PROMPT,
   });
   if (auditError) throw new Error(`Cannot write the audit log (${auditError}). Refusing to start without one.`);
@@ -216,6 +242,7 @@ async function main(): Promise<void> {
   // Sends one prompt, streams the reply, reports errors (prompt() does not throw on model errors).
   async function ask(text: string): Promise<boolean> {
     guard.startRun();
+    view.beginQuestion();
     lineOpen = false;
     calcInputs = [];
     contextWarned = false;
@@ -241,6 +268,13 @@ async function main(): Promise<void> {
     });
     process.stdout.write("\n");
     lineOpen = false;
+    // The lines under an answer (check, sources, notes, meter) start after one blank line.
+    let footerOpen = false;
+    const foot = (line: string): void => {
+      if (!footerOpen) console.log("");
+      footerOpen = true;
+      console.log(line);
+    };
 
     // Once per model: ask the Ollama server which window it really loaded. If it differs from the assumed one, warn
     // and use the server's figure from here on (src/ollamaContext.ts). A failure here never affects the answer.
@@ -263,10 +297,10 @@ async function main(): Promise<void> {
         const summary = summarizeCheck(checked);
         record("provenance", { figures: summary.figures, counts: summary.counts, unverified: summary.unverified.slice(0, 20) });
         const line = checkLine(summary);
-        if (line) console.log(line.warn ? warnLine(line.text) : dim(line.text));
+        if (line) foot(line.warn ? warnLine(line.text) : dim(line.text));
       } catch (err) {
         record("provenance_error", { error: err instanceof Error ? err.message : String(err) });
-        console.log(dim("[check] could not run for this answer"));
+        foot(dim("[check] could not run for this answer"));
       }
 
       // Where the answer's figures appear in the pages the model read (src/sources.ts). Its own try: a failure here
@@ -275,14 +309,14 @@ async function main(): Promise<void> {
         try {
           const inputs = calcInputs.flatMap((lit) => extractNumbers(normalise(lit)));
           const sources = buildSources(checked.map((c) => c.token), inputs, ledger);
-          const lines = formatSources(sources);
+          const lines = formatSources(sources, { link: linkSupported ? pageLink : undefined });
           if (lines.length) {
             record("sources", { entries: sourcesForAudit(sources), notListed: sources.many.length, moreEntries: sources.moreEntries });
-            for (const l of lines) console.log(dim(l));
+            for (const l of lines) foot(dim(l));
           }
         } catch (err) {
           record("sources_error", { error: err instanceof Error ? err.message : String(err) });
-          console.log(dim("[sources] could not be built for this answer"));
+          foot(dim("[sources] could not be built for this answer"));
         }
       }
     }
@@ -293,11 +327,13 @@ async function main(): Promise<void> {
       try {
         if (guard.blocked && !guard.tripped) {
           record("budget_note", { reason: guard.blocked });
-          console.log(warnLine(budgetNote(guard.blocked)));
+          foot(warnLine(budgetNote(guard.blocked)));
         }
+        const trimmed = view.trimmed();
+        if (trimmed && contextNow().knobs.trimLine) foot(dim(trimLine(trimmed)));
         const lastUsage = ([...agent.state.messages] as any[]).reverse().find((m) => m?.role === "assistant" && m.usage)?.usage;
         const meter = contextMeter(lastUsage, agent.state.model.contextWindow, !parsed.prompt);
-        if (meter) console.log(meter.high ? warnLine(meter.text) : dim(meter.text));
+        if (meter) foot(meter.high ? warnLine(meter.text) : dim(meter.text));
       } catch (err) {
         record("feedback_error", { error: err instanceof Error ? err.message : String(err) });
       }
@@ -373,6 +409,24 @@ async function main(): Promise<void> {
     console.log(dim(`Now using ${modelId}. The conversation continues; /new starts a fresh one.`));
   }
 
+  // /context shows the memory level and numbers; /context <auto|strict|balanced|lenient|off> changes the level for this session.
+  function contextCommand(arg: string): void {
+    if (arg) {
+      const next = arg.toLowerCase();
+      if (!CONTEXT_MODES.includes(next as ContextMode)) {
+        console.log(dim(`Unknown level "${oneLine(arg, 20)}". Use one of: ${CONTEXT_MODES.join(", ")}.`));
+        return;
+      }
+      const from = contextMode;
+      contextMode = next as ContextMode;
+      contextByCommand = true;
+      view.reset();
+      record("context_level", { from, to: contextMode, level: contextNow().level });
+    }
+    const lastUsage = ([...agent.state.messages] as any[]).reverse().find((m) => m?.role === "assistant" && m.usage)?.usage;
+    for (const l of describeContext(contextNow(), agent.state.model.contextWindow, view.last(), contextByCommand ? "command" : "setting", promptTokens(lastUsage) || undefined)) console.log(dim(l));
+  }
+
   // One-off mode: npm start -- [--model name] "question"
   if (parsed.prompt) {
     process.exitCode = (await ask(parsed.prompt)) ? 0 : 1;
@@ -394,7 +448,7 @@ async function main(): Promise<void> {
       : "File access: OFF for cloud models (set ALLOW_CLOUD_FILES=1 to allow; file contents would be sent to the provider)",
   );
   console.log(dim(`Audit log: ${audit.path}`));
-  console.log(dim("Commands: /model (list or switch the model), /new (clear conversation), exit. Ctrl+C stops an answer; at the prompt it quits.\n"));
+  console.log(dim("Commands: /model (list or switch the model), /context (memory level), /new (clear conversation), exit. Ctrl+C stops an answer; at the prompt it quits.\n"));
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   rl.on("SIGINT", () => {
@@ -423,9 +477,18 @@ async function main(): Promise<void> {
       }
       continue;
     }
+    if (line === "/context" || line.startsWith("/context ")) {
+      contextCommand(line.slice("/context".length).trim());
+      if (auditError) {
+        console.error(`Audit log write failed (${auditError}). Stopping: nothing runs without a record.`);
+        break;
+      }
+      continue;
+    }
     if (line === "/new") {
       agent.reset();
       ledger.reset();
+      view.reset();
       record("session_reset");
       if (auditError) {
         console.error(`Audit log write failed (${auditError}). Stopping: nothing runs without a record.`);

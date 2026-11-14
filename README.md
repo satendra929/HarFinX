@@ -36,7 +36,9 @@ npm test                                        # tests (no model needed)
 npm run typecheck
 ```
 
-Chat commands: `/model` lists or switches the model, `/new` clears the conversation, `exit` quits. Ctrl+C stops a running answer.
+Chat commands: `/model` lists or switches the model, `/context` shows how much of the earlier conversation the model is shown (and `/context strict|balanced|lenient|off` changes it), `/new` clears the conversation, `exit` quits. Ctrl+C stops a running answer.
+
+In a long chat the model is shown a shortened view of the earlier conversation: old page text becomes a one-line note, and the oldest questions drop out with a line saying so. Your full conversation and the audit log are never shortened. The level follows the model's context window by default; see `CONTEXT_MEMORY` in `.env.example`.
 
 ## Choosing a model
 

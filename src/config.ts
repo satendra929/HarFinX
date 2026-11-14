@@ -1,4 +1,5 @@
 import { DEFAULT_OLLAMA_MODEL, resolveModel } from "./modelChoice.ts";
+import { parseContextConfig, type ContextConfig } from "./contextSettings.ts";
 
 export type Provider = "ollama" | "anthropic";
 
@@ -16,6 +17,8 @@ export interface Config {
   calcShape: "steps" | "expr";
   /** Override of the provider's reasoning-history policy (src/reasoning.ts); undefined means the profile default. */
   reasoningHistory?: "drop" | "latest" | "keep";
+  /** How much of the earlier conversation the model is shown (src/contextSettings.ts). */
+  context: ContextConfig;
   envFileFound: boolean;
 }
 
@@ -66,6 +69,7 @@ export function loadConfig(overrides: { model?: string } = {}): Config {
     allowCloudFiles: env.ALLOW_CLOUD_FILES?.trim() === "1",
     calcShape: env.CALC_SHAPE?.trim() === "expr" ? "expr" : "steps",
     reasoningHistory,
+    context: parseContextConfig(env),
     envFileFound,
   };
 }
