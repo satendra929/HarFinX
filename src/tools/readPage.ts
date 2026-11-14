@@ -1,5 +1,5 @@
 // Read-only tool: returns one page of a PDF in the workspace (a filing, a report). The model finds the right page
-// first (the user names it, or later a search tool does) and reads it here. Long pages come in parts that never cut a
+// first (the user names it, or the search tool finds it) and reads it here. Long pages come in parts that never cut a
 // table row, and a later part repeats the page's units and year header so its numbers are read against the right column.
 // File access goes through the document store and the workspace; this file never touches node:fs.
 import type { AgentTool } from "@earendil-works/pi-agent-core";

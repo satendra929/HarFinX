@@ -18,28 +18,25 @@ function run(script: string[], limits: { maxCallsPerRun: number; maxTotalChars?:
     const step = script[requests++] ?? "text:late";
     const stream = createAssistantMessageEventStream();
     queueMicrotask(() => {
-      const content = step === "call" ? [{ type: "toolCall", id: `c${requests}`, name: "read_page", arguments: {} }] : [{ type: "text", text: step.slice(5) }];
+      const call = (name: string, n: number) => ({ type: "toolCall", id: `c${requests}-${n}`, name, arguments: {} });
+      const calls = step === "call" ? [call("read_page", 0)] : step === "mixed" ? [call("calculate", 0), call("read_page", 1)] : undefined; // "mixed": an allowed call and one that may be refused, in one reply
+      const content = calls ?? [{ type: "text", text: step.slice(5) }];
       stream.push({ type: "start", partial: asst([], "pending") } as never);
       if (options?.signal?.aborted) {
         stream.push({ type: "error", reason: "aborted", error: asst([], "aborted") } as never); // a real stream stops when the run is aborted
         return stream.end();
       }
-      stream.push({ type: "done", reason: step === "call" ? "toolUse" : "stop", message: asst(content, step === "call" ? "toolUse" : "stop") } as never);
+      stream.push({ type: "done", reason: calls ? "toolUse" : "stop", message: asst(content, calls ? "toolUse" : "stop") } as never);
       stream.end();
     });
     return stream;
   };
   let toolRuns = 0;
   const tool: any = { name: "read_page", label: "r", description: "d", parameters: { type: "object", properties: {} }, execute: async () => (toolRuns++, { content: [{ type: "text", text: toolText }], details: {} }) };
-  const guard = createGuard({ maxCallsPerRun: limits.maxCallsPerRun, maxOutputChars: 5000, maxTotalChars: limits.maxTotalChars ?? 12000, log: () => {} });
-  const agent = new Agent({ initialState: { systemPrompt: "", model, tools: [tool] }, streamFn: streamFn as never, beforeToolCall: guard.beforeToolCall, afterToolCall: guard.afterToolCall, identity: { attribution: null } });
-  agent.subscribe((e) => {
-    if (e.type === "message_end" && e.message.role === "assistant") guard.onReply();
-    if (e.type === "tool_execution_start") {
-      guard.onToolStart(e.toolName, e.args);
-      if (guard.tripped) agent.abort();
-    }
-  });
+  const calc: any = { name: "calculate", label: "c", description: "d", parameters: { type: "object", properties: {} }, execute: async () => ({ content: [{ type: "text", text: "1" }], details: {} }) };
+  const guard = createGuard({ maxCallsPerRun: limits.maxCallsPerRun, maxOutputChars: 5000, maxTotalChars: limits.maxTotalChars ?? 12000, log: () => {}, budgetExempt: ["calculate"] });
+  const agent = new Agent({ initialState: { systemPrompt: "", model, tools: [tool, calc] }, streamFn: streamFn as never, beforeToolCall: guard.beforeToolCall, afterToolCall: guard.afterToolCall, identity: { attribution: null } });
+  guard.attach(agent); // the same wiring the CLI uses
   guard.startRun();
   const last = () => agent.state.messages.at(-1) as any;
   return { agent, guard, seen, toolRuns: () => toolRuns, last };
@@ -77,4 +74,13 @@ test("output budget: refused softly, then a further call in the next reply stops
   await r.agent.prompt("question");
   assert.ok(r.guard.tripped);
   assert.match(r.guard.tripped!, /output limit/);
+});
+
+test("a refusal inside a batch whose other call ran stops the question: the model is not asked again", async () => {
+  // output budget spent after two reads; the third read is refused softly; the next reply asks for calculate AND read_page
+  const r = run(["call", "call", "call", "mixed", "text:late answer"], { maxCallsPerRun: 8, maxTotalChars: 15 }, "x".repeat(10));
+  await r.agent.prompt("question");
+  assert.ok(r.guard.tripped);
+  assert.match(r.guard.tripped!, /output limit/);
+  assert.notEqual(r.last().content?.[0]?.text, "late answer"); // before the fix the loop went on and the model wrote this
 });

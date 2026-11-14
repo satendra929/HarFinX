@@ -47,13 +47,13 @@ Two models have short names: `gemma` (the default) and `qwen`; any installed Oll
 ## How answers are checked
 
 - **`[check]` line.** A dim line means every figure traced to your file, your question or the calculator; a yellow line lists the ones that did not. It tells you a figure is traceable, not that it is right, and it only warns.
-- **Sources.** Under it, a dim block shows where the figures appear: file, page, heading, units, column heading and the matching rows. It is a number match only, so confirm on the page.
+- **References.** A dim `[S1]` appears beside each figure read from a page. Under the answer, a numbered list shows where each one is: file, page, heading, units, column heading and the matching rows. It is a number match only, so confirm on the page.
 - **`context N%`.** The last line shows how full the conversation is; near the limit it suggests `/new`.
 
 ## Safety and privacy
 
 - **One folder.** Only `WORKSPACE_DIR` (default `workspace/`) is readable, fixed at startup, and never chosen by the model.
-- **Limits per question.** At most 8 tool calls and 12,000 characters of file text. Each tool call shows as a dim one-line note; a yellow `[guard]` line means a limit acted.
+- **Limits per question.** About 8 tool calls and 12,000 characters of file text. At a limit the model is told to answer from what it has already read (calculator calls may run a little further); if it asks for more anyway, the question is stopped. Each tool call shows as a dim one-line note; a yellow `[guard]` line means a limit acted.
 - **Untrusted file contents.** Text inside a file is data, not instructions; the guards limit what the model can reach, not what it says.
 - **Model quirks.** An empty or looping reply is discarded and retried once.
 - **Audit log.** Every session writes `audit/session-<timestamp>-<id>.jsonl` (set by `AUDIT_DIR`): questions, answers, tool calls and guard decisions. It is append-only and local, and contains your data, so treat it as such.

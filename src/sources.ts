@@ -7,7 +7,7 @@ import { nearestHeader, sectionTitle } from "./documents/pages.ts";
 import { oneLine } from "./feedback.ts";
 
 /** Shown above the entries, identically every time. */
-export const DISCLAIMER = "Sources · number match only (not row, period or units): confirm on the page";
+export const DISCLAIMER = "References · number match only (not row, period or units): confirm on the page";
 
 export interface SourceLimits {
   /** A figure on more pages than this is not listed (a capped list would look like the best matches). */
@@ -37,6 +37,10 @@ export interface SourceRow {
 }
 
 export interface SourceEntry {
+  /** The place: the file (spelled one way) and the page. */
+  key: string;
+  /** Its reference number in the answer: [S1] is `ref` 1. */
+  ref: number;
   file: string;
   page?: number;
   printed?: string;
@@ -62,6 +66,28 @@ export interface SourcesResult {
 /** One file spelled two ways (./a/B.pdf, a\b.pdf) is one file. */
 export function fileKey(file: string): string {
   return file.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "").toLowerCase();
+}
+
+/**
+ * A whole number of one or two digits glued to a scale letter, with no currency sign, decimals or percent ("3M"), is
+ * more often a name (3M, 7B) than an amount. It gets no mark and no entry; the [check] line is not changed by this.
+ */
+function looksLikeName(t: NumToken): boolean {
+  return !!t.scale && !t.money && !t.percent && t.decimals === 0 && /^\d{1,2}[A-Za-z]{1,2}$/.test(t.raw);
+}
+
+type Located = Rec & { where: NonNullable<Rec["where"]> };
+/** The place a figure was read at: one key per file and page. */
+export const placeKey = (w: { file: string; page?: number }): string => `${fileKey(w.file)}#${w.page ?? ""}`;
+
+/**
+ * Where a figure of the answer was read, the rule shared by the marks in the answer and the list: nothing for a year,
+ * a list number or a constant, or a figure that has no recorded row; `keys` are the distinct places.
+ */
+export function placesOf(t: NumToken, ledger: Ledger): { recs: Located[]; keys: string[] } | undefined {
+  if (isNonFigure(t) || looksLikeName(t)) return undefined;
+  const recs = ledger.findAll(t).filter((r): r is Located => r.where !== undefined);
+  return recs.length ? { recs, keys: [...new Set(recs.map((r) => placeKey(r.where)))] } : undefined;
 }
 
 /** The same row seen twice: equal, or one is a cut-off piece of the other (a text file read in overlapping chunks). Short fragments never count. */
@@ -112,7 +138,9 @@ function labelAboveOf(lines: readonly string[] | undefined, lineNo: number | und
  * gave the calculator during this question (shown the same way, marked as inputs). Years, list numbers and constants
  * are skipped. A figure with no recorded row (not read from a file page or text, or typed by the user only) has no entry.
  */
-export function buildSources(figures: readonly NumToken[], calcInputs: readonly NumToken[], ledger: Ledger, limits: SourceLimits = DEFAULT_SOURCE_LIMITS): SourcesResult {
+export function buildSources(figures: readonly NumToken[], calcInputs: readonly NumToken[], ledger: Ledger, limits: SourceLimits = DEFAULT_SOURCE_LIMITS, order?: readonly string[]): SourcesResult {
+  // `order` are the places already numbered by the marks in the answer. The list holds exactly those, then the places of calculator inputs.
+  const allowed = order ? new Set(order) : undefined;
   const wanted = new Map<string, { token: NumToken; calcInput: boolean }>();
   for (const t of figures) if (!isNonFigure(t) && !wanted.has(t.raw)) wanted.set(t.raw, { token: t, calcInput: false });
   for (const t of calcInputs) if (!isNonFigure(t) && !wanted.has(t.raw)) wanted.set(t.raw, { token: t, calcInput: true });
@@ -120,20 +148,20 @@ export function buildSources(figures: readonly NumToken[], calcInputs: readonly 
   const entries = new Map<string, SourceEntry>();
   const many: SourcesResult["many"] = [];
   for (const { token, calcInput } of wanted.values()) {
-    const recs = ledger.findAll(token).filter((r): r is Rec & { where: NonNullable<Rec["where"]> } => r.where !== undefined);
-    if (recs.length === 0) continue;
-    const places = new Set(recs.map((r) => `${fileKey(r.where.file)}#${r.where.page ?? ""}`));
-    if (places.size > limits.pagesPerFigure) {
-      many.push({ figure: recs[0].raw, pages: places.size });
+    const found = placesOf(token, ledger);
+    if (!found) continue;
+    if (found.keys.length > limits.pagesPerFigure) {
+      many.push({ figure: found.recs[0].raw, pages: found.keys.length });
       continue;
     }
-    for (const r of recs) {
+    for (const r of found.recs) {
       const w = r.where;
-      const key = `${fileKey(w.file)}#${w.page ?? ""}`;
+      const key = placeKey(w);
+      if (allowed && !calcInput && !allowed.has(key)) continue; // a place with no number in the answer: not listed
       let entry = entries.get(key);
       const header = w.pageLines && w.lineNo !== undefined ? nearestHeader(w.pageLines, w.lineNo) : {};
       if (!entry) {
-        entry = { file: w.file, page: w.page, printed: w.printed, title: w.pageLines ? sectionTitle(w.pageLines) : undefined, units: header.units, columns: header.columns, period: header.period, current: false, rows: [] };
+        entry = { key, ref: 0, file: w.file, page: w.page, printed: w.printed, title: w.pageLines ? sectionTitle(w.pageLines) : undefined, units: header.units, columns: header.columns, period: header.period, current: false, rows: [] };
         entries.set(key, entry);
       }
       if (w.q === ledger.question) entry.current = true;
@@ -154,7 +182,16 @@ export function buildSources(figures: readonly NumToken[], calcInputs: readonly 
     }
   }
   const ordered = [...entries.values()].map((e) => ({ ...e, moreRows: Math.max(0, e.rows.length - limits.rowsPerPage), rows: e.rows.slice(0, limits.rowsPerPage) }));
-  ordered.sort((a, b) => Number(b.current) - Number(a.current)); // current question first; sort is stable, so the order read is kept inside each group
+  if (order) {
+    // the numbered places in their numbers, then the others (calculator inputs) after them
+    const at = (e: SourceEntry) => (order.includes(e.key) ? order.indexOf(e.key) : order.length);
+    ordered.sort((a, b) => at(a) - at(b)); // stable: the order read is kept among the others
+    let extra = order.length;
+    for (const e of ordered) e.ref = order.includes(e.key) ? order.indexOf(e.key) + 1 : ++extra;
+  } else {
+    ordered.sort((a, b) => Number(b.current) - Number(a.current)); // current question first; sort is stable, so the order read is kept inside each group
+    ordered.forEach((e, i) => (e.ref = i + 1));
+  }
   return { entries: ordered.slice(0, limits.entries), many, moreEntries: Math.max(0, ordered.length - limits.entries) };
 }
 
@@ -166,8 +203,10 @@ const CTX_MAX = 64;
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Where `raw` occurs in `text` as a whole number: not inside another one ("250" in "1,250" or "2,500" does not count). -1 if there is none. */
-export function indexOfFigure(text: string, raw: string): number {
-  return new RegExp(`(?<![\\d,.])${escapeRegExp(raw)}(?!\\d|[.,]\\d)`).exec(text)?.index ?? -1;
+export function indexOfFigure(text: string, raw: string, from = 0): number {
+  const re = new RegExp(`(?<![\\p{L}\\p{N}_.,])${escapeRegExp(raw)}(?!\\d|[.,]\\d)`, "gu"); // the same "not inside a word or number" rule as the tokenizer
+  re.lastIndex = from;
+  return re.exec(text)?.index ?? -1;
 }
 
 // the same character clean-up the figure checker applies, so a Unicode minus in the row still meets the figure's "-"
@@ -296,7 +335,7 @@ export function formatSources(r: SourcesResult, options: FormatOptions = {}): st
   const out = [DISCLAIMER];
   for (const e of r.entries) {
     const page = e.page !== undefined ? linked(`p.${e.page}`, options.link?.(e.file, e.page)) + (e.printed && e.printed !== String(e.page) ? ` (printed ${oneLine(e.printed, 8)})` : "") : "";
-    out.push("  " + [oneLine(e.file, 60), page, e.title ? oneLine(e.title, 70) : ""].filter(Boolean).join("  "));
+    out.push("  " + [`[S${e.ref}]`, oneLine(e.file, 60), page, e.title ? oneLine(e.title, 70) : ""].filter(Boolean).join("  "));
     out.push(...entryRows(e));
     if (e.moreRows) out.push(`    and ${e.moreRows} more row${e.moreRows === 1 ? "" : "s"}`);
   }
@@ -350,6 +389,6 @@ function entryRows(e: SourceEntry): string[] {
 }
 
 /** A compact record of what was shown, for the audit log. */
-export function sourcesForAudit(r: SourcesResult): { file: string; page?: number; printed?: string; rows: string[] }[] {
-  return r.entries.map((e) => ({ file: e.file, page: e.page, printed: e.printed, rows: e.rows.map((x) => oneLine(x.row, 120)) }));
+export function sourcesForAudit(r: SourcesResult): { ref: number; file: string; page?: number; printed?: string; rows: string[] }[] {
+  return r.entries.map((e) => ({ ref: e.ref, file: e.file, page: e.page, printed: e.printed, rows: e.rows.map((x) => oneLine(x.row, 120)) }));
 }

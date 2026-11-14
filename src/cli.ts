@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { Agent } from "@earendil-works/pi-agent-core";
-import { loadConfig } from "./config.ts";
+import { isLoopbackUrl, loadConfig, withoutCredentials } from "./config.ts";
 import { createModelFor } from "./model.ts";
 import { aliasOf, findInstalled, listInstalledModels, parseArgs, resolveModel } from "./modelChoice.ts";
 import { ensureWorkspaceDir, openWorkspace, PROJECT_ROOT } from "./workspace.ts";
@@ -12,7 +12,8 @@ import { createAuditLog } from "./audit.ts";
 import { readFileTool } from "./tools/readFile.ts";
 import { calculateTool } from "./tools/calculate.ts";
 import { Ledger, checkText, extractNumbers, normalise, type SourceMeta } from "./provenance.ts";
-import { buildSources, formatSources, sourcesForAudit } from "./sources.ts";
+import { buildSources, DEFAULT_SOURCE_LIMITS, formatSources, sourcesForAudit } from "./sources.ts";
+import { LineMarker, RefNumbers, markLine } from "./refs.ts";
 import { makePayloadHook } from "./payload.ts";
 import { recoverReply } from "./recover.ts";
 import { reasoningProfile } from "./reasoning.ts";
@@ -95,11 +96,18 @@ async function main(): Promise<void> {
   // Progress lines (tool calls, guard actions) start on a fresh line even when answer text is still streaming.
   let lineOpen = false;
   function println(line: string): void {
+    showText(lines.flush(false)); // answer text cut off by a progress line: shown as it is
     if (lineOpen) {
       process.stdout.write("\n");
       lineOpen = false;
     }
     console.log(line);
+  }
+  /** Answer text for the terminal (already safe, and marked when it is whole lines). */
+  function showText(text: string): void {
+    if (!text) return;
+    process.stdout.write(text);
+    lineOpen = !text.endsWith("\n");
   }
 
   const guard = createGuard({
@@ -109,10 +117,15 @@ async function main(): Promise<void> {
     budgetExempt: ["calculate"], // small, pure output; must keep working after several file chunks
   });
 
-  // File access only for local models unless explicitly allowed: file contents would go to the cloud provider.
-  const filesEnabled = cfg.provider === "ollama" || cfg.allowCloudFiles;
+  // File access only for models on this machine unless explicitly allowed: file contents would go to the cloud provider, or to an Ollama server elsewhere.
+  const modelIsLocal = cfg.provider === "ollama" && isLoopbackUrl(cfg.ollamaBaseUrl);
+  const filesEnabled = modelIsLocal || cfg.allowCloudFiles;
   // Figure provenance: the ledger records what the model was shown (file text, the user's words) and what the calculator returned.
   const ledger = new Ledger();
+  // The answer streams a line at a time, with a dim [S1] after each figure read from a page (src/refs.ts); the numbered
+  // list under the answer is built from the same numbers. Model text is made terminal-safe BEFORE a mark is added.
+  const refs = new RefNumbers(DEFAULT_SOURCE_LIMITS.entries);
+  const lines = new LineMarker((line) => markLine(cleanForTerminal(line), ledger, refs, dim), cleanForTerminal);
   // What the model was shown goes to the ledger. A failure here must not fail the tool call that showed it: it is
   // written to the audit log and the figures of that text simply stay untraced (the [check] line will say so).
   function feedLedger(label: string, text: string, meta: SourceMeta): void {
@@ -165,7 +178,7 @@ async function main(): Promise<void> {
     provider: cfg.provider,
     model: modelId,
     contextWindow: model.contextWindow,
-    ...(cfg.provider === "ollama" ? { ollamaBaseUrl: cfg.ollamaBaseUrl } : {}),
+    ...(cfg.provider === "ollama" ? { ollamaBaseUrl: withoutCredentials(cfg.ollamaBaseUrl) } : {}),
     workspace: workspace.root,
     filesEnabled,
     calcShape: cfg.calcShape,
@@ -181,9 +194,11 @@ async function main(): Promise<void> {
   // they reconstruct the exact context of every model call.
   let contextWarned = false; // one context warning per question
   let calcInputs: string[] = []; // the printed numbers given to the calculator during this question
+  guard.attach(agent); // counts replies and tool calls and aborts a stopped question; subscribed first, so the listener below sees `tripped` already set
   agent.subscribe((e) => {
+    // The end of a reply: its last line is whole now (a cut-off reply shows its tail as it is). First, so nothing printed below lands in the middle of the text.
+    if (e.type === "message_end" && e.message.role === "assistant") showText(lines.flush(e.message.stopReason !== "aborted" && e.message.stopReason !== "error"));
     if (e.type === "message_end" && e.message.role !== "user") record("message", { message: e.message }); // user text is in run_start
-    if (e.type === "message_end" && e.message.role === "assistant") guard.onReply(); // a limit refuses the first reply's calls softly, a later reply's calls for good
     if (e.type === "message_end" && e.message.role === "assistant" && !contextWarned) {
       const w = contextWarning(e.message.usage, agent.state.model.contextWindow);
       if (w) {
@@ -192,15 +207,13 @@ async function main(): Promise<void> {
         console.log(dim(`\n${w.text}`));
       }
     }
-    else if (e.type === "tool_execution_start") record("tool_start", { toolCallId: e.toolCallId, tool: e.toolName, args: e.args });
+    if (e.type === "tool_execution_start") record("tool_start", { toolCallId: e.toolCallId, tool: e.toolName, args: e.args });
     else if (e.type === "tool_execution_end") {
       record("tool_end", { toolCallId: e.toolCallId, tool: e.toolName, isError: e.isError, durationMs: e.durationMs });
     }
 
     if (e.type === "tool_execution_start") {
-      guard.onToolStart(e.toolName, e.args);
-      if (guard.tripped) agent.abort(); // stop a runaway loop; blocking alone lets the model keep calling
-      else println(dim(toolLine(e.toolName, e.args, guard.calls, DEFAULT_LIMITS.maxCallsPerRun)));
+      if (!guard.tripped) println(dim(toolLine(e.toolName, e.args, guard.calls, DEFAULT_LIMITS.maxCallsPerRun)));
       return;
     }
     if (e.type === "tool_execution_end") {
@@ -216,11 +229,11 @@ async function main(): Promise<void> {
     if (e.type !== "message_update") return;
     const ev = e.assistantMessageEvent;
     if (ev.type === "thinking_start") {
+      showText(lines.flush(false));
       process.stdout.write(dim("thinking…\n"));
       lineOpen = false;
     } else if (ev.type === "text_delta") {
-      process.stdout.write(cleanForTerminal(ev.delta));
-      if (ev.delta) lineOpen = !ev.delta.endsWith("\n");
+      showText(lines.push(ev.delta));
     }
   });
 
@@ -235,6 +248,7 @@ async function main(): Promise<void> {
     (reason) => {
       runawayReason = reason;
       record("runaway", { reason });
+      showText(lines.flush(false)); // the text that looped is shown before the stop line
       console.log(dim(`\n[stopped] ${reason}`));
     },
     maxReplyChars,
@@ -244,6 +258,8 @@ async function main(): Promise<void> {
   async function ask(text: string): Promise<boolean> {
     guard.startRun();
     view.beginQuestion();
+    refs.reset();
+    lines.flush(false); // nothing is left over from an earlier question
     lineOpen = false;
     calcInputs = [];
     contextWarned = false;
@@ -260,13 +276,18 @@ async function main(): Promise<void> {
         return r;
       },
       halted: () => userAborted || !!auditError || !!guard.tripped,
-      setNoThink: (on) => (noThinkNext = on),
+      // A retry starts here (this is switched on only for it): the reply it replaces is dropped, so its reference numbers go with it.
+      setNoThink: (on) => {
+        noThinkNext = on;
+        if (on) refs.reset();
+      },
       canSwitchThinkingOff: !!reasoning.thinkingOff,
       record,
       say: (line) => console.log(dim(`\n${line}`)),
       showReasoning: (text) => console.log(cleanForTerminal(text)),
       noAnswerHint: () => emptyAnswerHint(guard.calls, DEFAULT_LIMITS.maxCallsPerRun),
     });
+    showText(lines.flush(false)); // a reply that ended without its last event (a failed stream): its text is shown as it is
     process.stdout.write("\n");
     lineOpen = false;
     // The lines under an answer (check, sources, notes, meter) start after one blank line.
@@ -309,17 +330,21 @@ async function main(): Promise<void> {
       if (checked) {
         try {
           const inputs = calcInputs.flatMap((lit) => extractNumbers(normalise(lit)));
-          const sources = buildSources(checked.map((c) => c.token), inputs, ledger);
-          const lines = formatSources(sources, { link: linkSupported ? pageLink : undefined });
-          if (lines.length) {
-            record("sources", { entries: sourcesForAudit(sources), notListed: sources.many.length, moreEntries: sources.moreEntries });
-            for (const l of lines) foot(dim(l));
+          // The figures are the ones the marks were made from (refs.seen), so the list and the marks cannot disagree.
+          const sources = buildSources(refs.seen, inputs, ledger, DEFAULT_SOURCE_LIMITS, refs.order);
+          const listLines = formatSources(sources, { link: linkSupported ? pageLink : undefined });
+          if (listLines.length) {
+            record("sources", { marked: refs.order.length, entries: sourcesForAudit(sources), notListed: sources.many.length, moreEntries: sources.moreEntries });
+            for (const l of listLines) foot(dim(l));
           }
         } catch (err) {
           record("sources_error", { error: err instanceof Error ? err.message : String(err) });
           foot(dim("[sources] could not be built for this answer"));
         }
       }
+    } else if (!auditError && answerTextSince(agent.state.messages).trim()) {
+      // The answer was cut short (Ctrl+C, a limit, a loop or an error): some text was shown, so say that it was not checked.
+      foot(dim("[check] not run: the answer is incomplete"));
     }
 
     // The last lines of an answer: a note when the file-reading budget ran out, and how full the conversation is.
@@ -439,14 +464,16 @@ async function main(): Promise<void> {
   if (!cfg.envFileFound) console.log(dim("No .env found; using defaults. Copy .env.example to .env to change settings."));
   console.log(`HarFinX chat —${cfg.provider}/${modelId}`);
   console.log(
-    cfg.provider === "ollama"
+    modelIsLocal
       ? dim("Model: local (nothing leaves this machine)")
-      : "Model: CLOUD (prompts and any file contents are sent to the provider)",
+      : cfg.provider === "ollama"
+        ? "Model: REMOTE Ollama server (prompts and any file contents are sent to it)"
+        : "Model: CLOUD (prompts and any file contents are sent to the provider)",
   );
   console.log(
     filesEnabled
       ? dim(`Workspace (only folder the harness may read): ${workspace.root}`)
-      : "File access: OFF for cloud models (set ALLOW_CLOUD_FILES=1 to allow; file contents would be sent to the provider)",
+      : "File access: OFF for models that are not on this machine (set ALLOW_CLOUD_FILES=1 to allow; file contents would be sent to the provider)",
   );
   console.log(dim(`Audit log: ${audit.path}`));
   console.log(dim("Commands: /model (list or switch the model), /context (memory level), /new (clear conversation), exit. Ctrl+C stops an answer; at the prompt it quits.\n"));

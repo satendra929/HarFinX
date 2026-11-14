@@ -19,8 +19,10 @@ export function checkFinite(x: Num, where: string): Num {
   return x;
 }
 
-// "11,503"  "$1,233"  "(473)"  "-5.5"  "3.06%"  -> exactly one number, nothing else.
-const INPUT = /^(\()?\s?[$€£]?\s?(-|−)?\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s?(\))?\s?(%)?$/;
+// "11,503"  "$1,233"  "(473)"  "($473)"  "$(473)"  "-5.5"  "3.06%"  "(12.5%)"  "(12.5)%"  -> exactly one number, nothing else.
+// The currency sign may stand on either side of the opening bracket and the percent sign on either side of the closing one
+// (the PDF reader prints a loss as "$(473)"). Groups: 1 "(", 2 minus, 3 whole part, 4 decimals, 5 "%" inside, 6 ")", 7 "%" outside.
+const INPUT = /^[$€£]?\s?(\()?\s?[$€£]?\s?(-|−)?\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s?(%)?\s?(\))?\s?(%)?$/;
 
 /**
  * Parse a value copied from the source. Lenient about formatting ($, commas, parentheses = negative, %),
@@ -29,13 +31,13 @@ const INPUT = /^(\()?\s?[$€£]?\s?(-|−)?\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\
 export function parseInputLiteral(literal: string, name: string): Num {
   const s = literal.trim();
   const m = INPUT.exec(s.normalize("NFKC"));
-  if (!m || Boolean(m[1]) !== Boolean(m[5])) {
+  if (!m || Boolean(m[1]) !== Boolean(m[6]) || (m[5] && m[7])) {
     const unit = /[A-Za-z]/.test(s) ? " Unit words (million, thousand, M, bn) are not accepted: copy the number exactly as printed and convert with the calculator." : "";
     throw new CalcError(`input "${name}": cannot read "${literal}" as a single number.${unit}`);
   }
   let x = new D(m[3].replace(/,/g, "") + (m[4] ?? ""));
   if (m[1] || m[2]) x = x.neg();
-  if (m[6]) x = x.div(100);
+  if (m[5] || m[7]) x = x.div(100);
   return x;
 }
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { aliasOf, DEFAULT_OLLAMA_MODEL, findInstalled, MODEL_ALIASES, ollamaRoot, parseArgs, parseInstalled, resolveModel } from "../src/modelChoice.ts";
+import { aliasOf, DEFAULT_OLLAMA_MODEL, findInstalled, MODEL_ALIASES, parseArgs, parseInstalled, resolveModel } from "../src/modelChoice.ts";
 import { loadConfig } from "../src/config.ts";
 import { reasoningProfile } from "../src/reasoning.ts";
 
@@ -44,12 +44,6 @@ test("findInstalled matches a list number, a short name, a tag, or a name served
   assert.equal(findInstalled("0", installed), undefined);
   assert.equal(findInstalled("phi4", installed), undefined);
   assert.equal(findInstalled("gemma", ["qwen3:14b"]), undefined); // a known short name that is not installed
-});
-
-test("ollamaRoot strips the /v1 suffix and trailing slashes", () => {
-  assert.equal(ollamaRoot("http://localhost:11434/v1"), "http://localhost:11434");
-  assert.equal(ollamaRoot("http://localhost:11434/v1/"), "http://localhost:11434");
-  assert.equal(ollamaRoot("http://host:1234"), "http://host:1234");
 });
 
 test("the default model is gemma4:12b", () => {

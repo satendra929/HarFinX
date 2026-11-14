@@ -22,6 +22,31 @@ export interface Config {
   envFileFound: boolean;
 }
 
+/**
+ * Whether a model server URL points at this machine (localhost, 127.x.x.x or ::1). A server anywhere else gets the same
+ * privacy treatment as a cloud model: file tools stay off unless ALLOW_CLOUD_FILES=1, because file contents would leave the machine.
+ */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+    return host === "localhost" || host === "[::1]" || host === "::1" || /^127(?:\.\d{1,3}){3}$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
+/** The URL without any user:password part, for the audit log; a text that is not a URL is not logged at all. */
+export function withoutCredentials(url: string): string {
+  try {
+    const u = new URL(url);
+    u.username = "";
+    u.password = "";
+    return u.href;
+  } catch {
+    return "(not a valid URL)";
+  }
+}
+
 export const DEFAULT_OLLAMA_CONTEXT = 16384;
 const MIN_CONTEXT = 2048;
 const MAX_CONTEXT = 1_048_576;

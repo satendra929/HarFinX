@@ -1,8 +1,8 @@
 // Run-level limits for tool use. Path confinement lives in workspace.ts, not here.
-// Wiring: guard.beforeToolCall / afterToolCall go to the Agent; the CLI calls startRun() before each
-// prompt and feeds tool_execution_start events to onToolStart(), aborting the run if `tripped` is set.
+// Wiring: guard.beforeToolCall / afterToolCall go to the Agent, guard.attach(agent) feeds it the agent's events (replies and
+// tool-call starts) and aborts a stopped question, and the CLI calls startRun() before each prompt.
 // (Unknown/invalid tool calls never reach beforeToolCall, so the cap counts start events instead.)
-import type { AfterToolCallContext, AfterToolCallResult, BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
+import type { AfterToolCallContext, AfterToolCallResult, AgentEvent, BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
 
 /** Structured record of a guard decision, for the audit log. Tool arguments are logged by tool_start, not here. */
 export type GuardEvent =
@@ -21,7 +21,8 @@ export interface GuardOptions {
   budgetExempt?: string[];
 }
 
-// Sized for a local model with an 8k-token window (numbers tokenise at ~2-3 chars/token).
+// Sized for an 8k-token window (numbers tokenise at ~2-3 chars/token). The default window is 16k, so these are tighter than
+// they need to be there; scaling them with the window is on the todo list.
 export const DEFAULT_LIMITS = { maxCallsPerRun: 8, maxOutputChars: 5_000, maxTotalChars: 12_000 };
 
 // Model-controlled text must not reach the terminal raw (ANSI escapes etc.).
@@ -39,8 +40,10 @@ export function safeForLog(value: unknown, max = 200): string {
 // Model-controlled text streamed to the terminal: drop escape codes and other control characters
 // (keeps \n and \t) so it cannot recolour, move the cursor or overwrite output. This also means only
 // the harness can produce coloured [guard] lines. A split escape sequence is harmless: ESC itself is replaced.
+// A carriage return is dropped (CRLF line ends are common; a bare CR would overwrite the line), and invisible format
+// characters (bidi overrides, zero-width marks, BOM) and line or paragraph separators are removed, as `oneLine` does.
 export function cleanForTerminal(s: string): string {
-  return s.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "?");
+  return s.replace(/\r/g, "").replace(/[\p{Cf}\p{Zl}\p{Zp}]/gu, "").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "?");
 }
 
 /**
@@ -80,6 +83,18 @@ export function createGuard(opts: GuardOptions) {
     if (reply !== softReply || calls > opts.maxCallsPerRun * 2) trip(reason, name);
   }
 
+  /** The model finished a reply (its tool calls, if any, start after this). Lets the guard tell one reply's calls from the next reply's. */
+  function onReply(): void {
+    reply++;
+  }
+
+  function onToolStart(name: string, _args?: unknown): void {
+    calls++;
+    opts.onEvent?.({ kind: "call", n: calls, max: opts.maxCallsPerRun, tool: name });
+    // Counted here, not in beforeToolCall: an unknown tool name never reaches that hook.
+    if (!tripped && callsOver(name)) refuse(`tool-call limit reached (${opts.maxCallsPerRun} per question)`, name);
+  }
+
   return {
     startRun(): void {
       calls = 0;
@@ -90,9 +105,20 @@ export function createGuard(opts: GuardOptions) {
       softReply = undefined;
     },
 
-    /** The model finished a reply (its tool calls, if any, start after this). Lets the guard tell one reply's calls from the next reply's. */
-    onReply(): void {
-      reply++;
+    onReply,
+    onToolStart,
+
+    /**
+     * Wires the guard to an agent: counts replies and tool calls, and aborts the run as soon as the question is stopped, at
+     * a call's start (a call over the limit) and at a call's end (a refusal inside a batch whose other calls ran). Subscribe it
+     * before any listener that reads `tripped`. The CLI and the tests both use this, so they cannot wire it differently.
+     */
+    attach(agent: { subscribe(listener: (e: AgentEvent) => void): unknown; abort(): void }): void {
+      agent.subscribe((e) => {
+        if (e.type === "message_end" && e.message.role === "assistant") onReply();
+        else if (e.type === "tool_execution_start") onToolStart(e.toolName, e.args);
+        if ((e.type === "tool_execution_start" || e.type === "tool_execution_end") && tripped) agent.abort(); // blocking alone lets the model keep calling
+      });
     },
 
     /** Why a tool call of this question was refused (a limit, not a failure), if any. */
@@ -108,13 +134,6 @@ export function createGuard(opts: GuardOptions) {
     /** How many tool calls this question has started. Routine calls are not logged here (the CLI shows them as dim lines); only limits are. */
     get calls(): number {
       return calls;
-    },
-
-    onToolStart(name: string, args: unknown): void {
-      calls++;
-      opts.onEvent?.({ kind: "call", n: calls, max: opts.maxCallsPerRun, tool: name });
-      // Counted here, not in beforeToolCall: an unknown tool name never reaches that hook.
-      if (!tripped && callsOver(name)) refuse(`tool-call limit reached (${opts.maxCallsPerRun} per question)`, name);
     },
 
     async beforeToolCall(ctx: BeforeToolCallContext): Promise<BeforeToolCallResult | undefined> {

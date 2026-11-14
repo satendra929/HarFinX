@@ -60,7 +60,13 @@ test("input literals: lenient about format, strict about meaning", () => {
   assert.equal(v("−7"), "-7");
   assert.equal(v("3.06%"), "0.0306");
   assert.equal(v(" 1,306 "), "1306");
-  for (const bad of ["5 million", "5M", "1,23", "abc", "(5", "5)", "1.2.3", "", "1e6", "12 345"]) fails(() => parseInputLiteral(bad, "x"), /cannot read/);
+  // the forms the PDF reader prints: a loss as "$(473)", a negative rate as "(12.5%)" or "(12.5)%"
+  assert.equal(v("($473)"), "-473");
+  assert.equal(v("$(473)"), "-473");
+  assert.equal(v("(12.5%)"), "-0.125");
+  assert.equal(v("(12.5)%"), "-0.125");
+  assert.equal(v("$ (1,220)"), "-1220");
+  for (const bad of ["5 million", "5M", "1,23", "abc", "(5", "5)", "1.2.3", "", "1e6", "12 345", "(5%)%", "$(5", "$5)", "%5"]) fails(() => parseInputLiteral(bad, "x"), /cannot read/);
   fails(() => parseInputLiteral("5 million", "x"), /Unit words/);
 });
 

@@ -140,6 +140,12 @@ test("terminal text loses escape codes and control characters but keeps newlines
   assert.ok(s.startsWith("ok\n\tline"));
 });
 
+test("terminal text: CRLF line ends lose the CR (no stray '?'); invisible format characters and separators are removed; ordinary text is untouched", () => {
+  assert.equal(cleanForTerminal("a\r\nb\rc"), "a\nbc");
+  assert.equal(cleanForTerminal("pay‮load​ ﻿ok !"), "payload ok!"); // bidi override, zero-width space, BOM, line separator
+  assert.equal(cleanForTerminal("Revenue was $5,818 million (up 3%) – naïve café ✓"), "Revenue was $5,818 million (up 3%) – naïve café ✓");
+});
+
 test("logged text has no terminal control characters and is truncated", () => {
   const s = safeForLog({ path: "a\u001b[31mred\u0007\u009b" + "z".repeat(500) });
   assert.doesNotMatch(s, /[\u0000-\u001f\u007f-\u009f]/);

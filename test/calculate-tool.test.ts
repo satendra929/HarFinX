@@ -95,7 +95,7 @@ test("finance functions: the answer is traced to the calculator and the definiti
   assert.deepEqual(checkText("The gross margin was 45.2% and the current ratio 1.40.", ledger).map((c) => c.cls), ["C", "C"]);
 });
 
-test("tool is sequential and its prompt footprint stays small (8k context)", () => {
+test("tool is sequential and its prompt footprint stays small", () => {
   for (const shape of ["steps", "expr"] as const) {
     const tool = calculateTool(new Ledger(), shape);
     assert.equal(tool.name, "calculate");

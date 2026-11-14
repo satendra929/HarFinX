@@ -1,5 +1,6 @@
 // Choosing the local model: short names, the --model flag, and the list of models installed in Ollama.
 // Pure helpers (no I/O) except listInstalledModels(), which asks the local Ollama server.
+import { ollamaRoot } from "./ollamaContext.ts";
 
 /** Short names for models we have set up. Any other Ollama tag also works as typed. */
 export const MODEL_ALIASES: Record<string, string> = {
@@ -66,11 +67,6 @@ export function findInstalled(arg: string, installed: string[]): string | undefi
   if (/^\d+$/.test(a)) return installed[Number(a) - 1];
   const tag = resolveModel(a);
   return installed.find((m) => m === tag) ?? installed.find((m) => m === `${tag}:latest`);
-}
-
-/** The Ollama server root for a base URL such as http://localhost:11434/v1. */
-export function ollamaRoot(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
 }
 
 /** Asks the local Ollama server which models are installed. Throws if it cannot be reached. */

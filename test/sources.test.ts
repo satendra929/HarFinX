@@ -58,7 +58,7 @@ test("formatSources: a short heading line, the page line, then units and column 
   const lines = formatSources(buildSources(answerTokens("Inventories: 5,818.", l), [], l));
   assert.deepEqual(lines, [
     DISCLAIMER,
-    "  filings/a.pdf  p.1  Consolidated Balance Sheets",
+    "  [S1]  filings/a.pdf  p.1  Consolidated Balance Sheets",
     "    (in millions)              2023    2022",
     "    Merchandise inventories  [5,818]  5,923",
   ]);
@@ -205,7 +205,8 @@ test("indexOfFigure: a figure inside a longer number is not that figure", () => 
   assert.equal(indexOfFigure("Total (473) | 120", "(473)"), 6);
   assert.equal(indexOfFigure("Loss -473 | 120", "-473"), 5);
   assert.equal(indexOfFigure("Rate 3.06% up", "3.06%"), 5);
-  assert.equal(indexOfFigure("a+b", "+"), 1); // regex characters in a figure are plain text
+  assert.equal(indexOfFigure("a +b", "+"), 2); // regex characters in a figure are plain text
+  assert.equal(indexOfFigure("X5818 and 5818", "5818"), 10); // not inside a code or a word (the tokenizer's rule too)
 });
 
 test("a figure that also appears inside a longer number is marked where it really is, and a Unicode minus in the row still meets the figure", () => {
@@ -229,7 +230,7 @@ test("a units line that is also the column heading line is shown once as units, 
   const lines = threeM("Net sales were $34,229 million.");
   assert.deepEqual(lines, [
     DISCLAIMER,
-    "  3M.pdf  p.60  Disaggregated revenue information",
+    "  [S1]  3M.pdf  p.60  Disaggregated revenue information",
     "    (Millions)  ·  Year ended December 31",
     "                                    2022       2021       2020",
     "    Total Company = Worldwide  [$ 34,229]  $ 35,355   $ 32,184",
@@ -253,7 +254,7 @@ test("rows with the same figures under different labels become one row; differen
 test("the page reference can be a terminal link; a link with control characters is dropped; nothing else changes", () => {
   const plain = threeM("Net sales were $34,229 million.");
   const withLink = threeM("Net sales were $34,229 million.", { link: (f, p) => `file:///x/${f}#page=${p}` });
-  assert.equal(withLink[1], "  3M.pdf  \u001b]8;;file:///x/3M.pdf#page=60\u001b\\p.60\u001b]8;;\u001b\\  Disaggregated revenue information");
+  assert.equal(withLink[1], "  [S1]  3M.pdf  \u001b]8;;file:///x/3M.pdf#page=60\u001b\\p.60\u001b]8;;\u001b\\  Disaggregated revenue information");
   assert.deepEqual(withLink.filter((_, i) => i !== 1), plain.filter((_, i) => i !== 1));
   assert.deepEqual(threeM("Net sales were $34,229 million.", { link: () => "file:///x\u001b[2J" }), plain);
   assert.deepEqual(threeM("Net sales were $34,229 million.", { link: () => undefined }), plain);
@@ -382,7 +383,7 @@ test("text files: sourced by file and row, no page", () => {
   const r = buildSources(answerTokens("Operating income was 1,306.", l), [], l);
   assert.equal(r.entries[0].page, undefined);
   const lines = formatSources(r);
-  assert.equal(lines[1], "  notes.txt");
+  assert.equal(lines[1], "  [S1]  notes.txt");
   assert.equal(lines[2], "    Operating income [1,306]");
 });
 
@@ -423,7 +424,7 @@ test("sourcesForAudit: file, page, printed and the rows shown", async () => {
   l.addUser("q");
   await read(l, [BS], 1);
   const a = sourcesForAudit(buildSources(answerTokens("5,818", l), [], l));
-  assert.deepEqual(a, [{ file: "filings/a.pdf", page: 1, printed: undefined, rows: ["Merchandise inventories | 5,818 | 5,923"] }]);
+  assert.deepEqual(a, [{ ref: 1, file: "filings/a.pdf", page: 1, printed: undefined, rows: ["Merchandise inventories | 5,818 | 5,923"] }]);
 });
 
 // ---- the page helpers ------------------------------------------------------------------------------------------------

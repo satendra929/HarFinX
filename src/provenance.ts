@@ -1,5 +1,5 @@
 // Figure provenance: where does each number in an answer come from? Pure, deterministic, no model, no I/O.
-//   S = appears in text the model was shown from the source (read_file results)
+//   S = appears in text the model was shown from the source (read_file and read_page results)
 //   U = appears in the user's own message
 //   K = not a figure (year, enumerator, constant, label, file name, ...)
 //   X = unverified: not from the source, the user, a calculation, or a known non-figure
@@ -52,6 +52,17 @@ export function normalise(text: string): string {
   let t = text.normalize("NFKC").replace(ZERO_WIDTH, "");
   t = t.replace(/−/g, "-").replace(/\\%/g, "%").replace(/\\[a-zA-Z]+/g, " "); // LaTeX: \frac \times \text ...
   for (const re of LABELS) t = t.replace(re, " ");
+  return t;
+}
+
+/**
+ * `text` with the label text that normalise() blanks (file names, "p. 45", "Note 7", form names, dates) overwritten by
+ * spaces of the same length, so a position found in it is a position in `text`. Used to place a mark in the raw answer:
+ * normalise() itself shifts positions, so token indexes cannot be used there.
+ */
+export function maskLabels(text: string): string {
+  let t = text;
+  for (const re of LABELS) t = t.replace(re, (s) => " ".repeat(s.length));
   return t;
 }
 
