@@ -43,11 +43,42 @@ export function cleanForTerminal(s: string): string {
   return s.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "?");
 }
 
+/**
+ * What the model is told when a call is refused. No digits on purpose: the model may repeat it, and a number that is in
+ * no source would show up as untraced in the [check] line. The numbers go to the user line and the audit log instead.
+ */
+export const ANSWER_NOW =
+  "No more tool calls are available for this question. Answer now from what you have already read, use calculate for any arithmetic, and say what you could not find.";
+
 export function createGuard(opts: GuardOptions) {
   let calls = 0;
   let totalChars = 0;
   let tripped: string | undefined;
   let blockedBy: string | undefined; // why the first call of this question was refused, if one was
+  let reply = 0; // model replies seen in this question (the CLI calls onReply() after each one)
+  let softReply: number | undefined; // the reply whose calls were first refused
+
+  const exempt = (name: string) => !!opts.budgetExempt?.includes(name);
+  // The calculator may still run over the call limit (the model is told to use it), but never past twice the limit.
+  const callsOver = (name: string) => calls > opts.maxCallsPerRun * 2 || (calls > opts.maxCallsPerRun && !exempt(name));
+
+  function trip(reason: string, name: string): void {
+    if (tripped) return;
+    tripped = reason;
+    opts.log(`stopping this question: ${reason}; the call to ${safeForLog(name, 60)} is not run`);
+    opts.onEvent?.({ kind: "tripped", reason });
+  }
+
+  /**
+   * A call was refused. The first time (any calls of the same reply) it is a soft stop: the call gets ANSWER_NOW as its
+   * result and the model gets one more reply to answer. A refusal in a later reply means the model ignored that, or the
+   * call count is past twice the limit: the question is stopped.
+   */
+  function refuse(reason: string, name: string): void {
+    blockedBy ??= reason;
+    softReply ??= reply;
+    if (reply !== softReply || calls > opts.maxCallsPerRun * 2) trip(reason, name);
+  }
 
   return {
     startRun(): void {
@@ -55,6 +86,13 @@ export function createGuard(opts: GuardOptions) {
       totalChars = 0;
       tripped = undefined;
       blockedBy = undefined;
+      reply = 0;
+      softReply = undefined;
+    },
+
+    /** The model finished a reply (its tool calls, if any, start after this). Lets the guard tell one reply's calls from the next reply's. */
+    onReply(): void {
+      reply++;
     },
 
     /** Why a tool call of this question was refused (a limit, not a failure), if any. */
@@ -75,23 +113,24 @@ export function createGuard(opts: GuardOptions) {
     onToolStart(name: string, args: unknown): void {
       calls++;
       opts.onEvent?.({ kind: "call", n: calls, max: opts.maxCallsPerRun, tool: name });
-      if (calls > opts.maxCallsPerRun && !tripped) {
-        tripped = `tool-call limit reached (${opts.maxCallsPerRun} per question)`;
-        opts.log(`stopping this question: ${tripped}; the call to ${safeForLog(name, 60)} is not run`);
-        opts.onEvent?.({ kind: "tripped", reason: tripped });
-      }
+      // Counted here, not in beforeToolCall: an unknown tool name never reaches that hook.
+      if (!tripped && callsOver(name)) refuse(`tool-call limit reached (${opts.maxCallsPerRun} per question)`, name);
     },
 
     async beforeToolCall(ctx: BeforeToolCallContext): Promise<BeforeToolCallResult | undefined> {
+      const name = ctx.toolCall.name;
       let reason = tripped;
-      if (!reason && totalChars >= opts.maxTotalChars && !opts.budgetExempt?.includes(ctx.toolCall.name)) {
+      if (!reason && callsOver(name)) reason = `tool-call limit reached (${opts.maxCallsPerRun} per question)`; // already counted in onToolStart
+      else if (!reason && totalChars >= opts.maxTotalChars && !exempt(name)) {
         reason = `tool output limit reached (${opts.maxTotalChars} characters per question)`;
+        refuse(reason, name);
       }
       if (!reason) return undefined;
       blockedBy ??= reason;
-      opts.log(`blocked ${safeForLog(ctx.toolCall.name, 60)}: ${reason}`);
-      opts.onEvent?.({ kind: "blocked", tool: ctx.toolCall.name, reason });
-      return { block: true, reason, terminate: true };
+      opts.log(`blocked ${safeForLog(name, 60)}: ${reason}`);
+      opts.onEvent?.({ kind: "blocked", tool: name, reason });
+      // A soft stop lets the loop go on, so the model can answer; a stopped question ends the batch.
+      return { block: true, reason: ANSWER_NOW, ...(tripped ? { terminate: true } : {}) };
     },
 
     async afterToolCall(ctx: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {

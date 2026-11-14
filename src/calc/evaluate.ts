@@ -39,7 +39,7 @@ const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,39}$/;
 
 function checkName(name: string, kind: string): void {
   if (typeof name !== "string" || !NAME.test(name)) throw new CalcError(`${kind} name "${String(name).slice(0, 40)}" must start with a letter and use only letters, digits and _ (e.g. net_sales_2019, not 2019_net_sales), at most 40 characters`);
-  if (FUNCTION_MAP.has(name)) throw new CalcError(`${kind} name "${name}" is a function name; pick another`);
+  // A name may equal a function name (a step called `ratio` is natural): the parser tells a call, `ratio(`, from a name.
 }
 
 export function runProgram(inputs: Record<string, string>, steps: StepInput[]): RunResult {

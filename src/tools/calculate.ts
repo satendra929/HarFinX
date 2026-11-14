@@ -2,7 +2,7 @@
 // answer should come from here (see src/provenance.ts). Inputs are source numbers copied exactly as printed; the tool
 // parses them, computes in exact decimal arithmetic, and returns the values to quote.
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { FUNCTION_MAP, helpText } from "../calc/functions.ts";
+import { CATEGORIES, FUNCTIONS, FUNCTION_MAP, helpText } from "../calc/functions.ts";
 import { runProgram, type StepInput } from "../calc/evaluate.ts";
 import { CalcError, ENGINE, ROUNDING } from "../calc/num.ts";
 import { Ledger, classify, extractNumbers, normalise } from "../provenance.ts";
@@ -12,14 +12,14 @@ export type CalcShape = "steps" | "expr";
 const COMMON =
   "Exact decimal calculator. Use it for EVERY calculation, ratio, percentage, average, growth rate and unit conversion; never compute in your head. " +
   'Put each number from the source in `inputs` exactly as printed, with a short name that starts with a letter (e.g. {"sales":"11,503","loss":"(473)","rate":"3.06%"}); never type a number you worked out yourself. ' +
-  "Expressions may use input names, earlier step names, + - * / ^, parentheses and the functions sum, avg, min, max, abs, round, sqrt, pow, ratio, pct_change, cagr (ask `help` for definitions). " +
+  "Expressions may use input names, earlier step names, + - * / ^, parentheses and the functions " + FUNCTIONS.map((f) => f.name).join(", ") + " (ask `help` for definitions). " +
   "Rates are fractions (0.05); set pct:true to show a percent and dp for the decimal places the question asks for. ";
 const EXAMPLE_STEPS = 'Example: inputs {"sales":"11,503","op":"1,306"}, steps [{"name":"margin","expr":"op / sales","dp":1,"pct":true}]. ';
 const EXAMPLE_EXPR = 'Example: inputs {"sales":"11,503","op":"1,306"}, expr "op / sales", dp 1, pct true. ';
 const QUOTE = "Quote the returned `shown` values exactly.";
 
 const INPUTS_SCHEMA = { type: "object", additionalProperties: { type: "string" }, description: "name -> number copied exactly as printed in the source" };
-const HELP_SCHEMA = { type: "string", description: "A function name or category (core, growth) to list definitions instead of calculating" };
+const HELP_SCHEMA = { type: "string", description: "A function name or category (" + CATEGORIES.join(", ") + ") to list definitions instead of calculating" };
 
 interface Params {
   inputs?: Record<string, string>;

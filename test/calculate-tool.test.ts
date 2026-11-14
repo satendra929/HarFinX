@@ -73,6 +73,26 @@ test("help lists definitions without calculating", async () => {
   const tool = calculateTool(new Ledger());
   assert.match((await run(tool, { help: "cagr" })).content[0].text, /\(end \/ begin\) \^ \(1 \/ years\) - 1/);
   assert.match((await run(tool, { help: "growth" })).content[0].text, /pct_change/);
+  const finance = (await run(tool, { help: "finance" })).content[0].text;
+  for (const name of ["gross_margin", "operating_margin", "net_margin", "current_ratio", "working_capital"]) assert.ok(finance.includes(name + "("), name);
+  assert.match((await run(tool, { help: "nonsense" })).content[0].text, /Categories: core, growth, finance/);
+});
+
+test("finance functions: the answer is traced to the calculator and the definition is returned", async () => {
+  const ledger = withSource("Net sales 11,503 Gross profit 5,200 Current assets 9,100 Current liabilities (6,500)");
+  const tool = calculateTool(ledger);
+  const r = await run(tool, { inputs: { gp: "5,200", s: "11,503", ca: "9,100", cl: "6,500" }, steps: [
+    { name: "gross_margin", expr: "gross_margin(gp, s)", dp: 1, pct: true },
+    { name: "current_ratio", expr: "current_ratio(ca, cl)", dp: 2 },
+    { name: "working_capital", expr: "working_capital(ca, cl)" },
+  ] });
+  const text = r.content[0].text;
+  assert.match(text, /gross_margin = 45\.2%/);
+  assert.match(text, /current_ratio = 1\.40/);
+  assert.match(text, /working_capital = 2,?600/);
+  assert.match(text, /definitions: .*gross_margin\(gross_profit, revenue\) = gross_profit \/ revenue/);
+  assert.match(text, /current_ratio\(current_assets, current_liabilities\) = /);
+  assert.deepEqual(checkText("The gross margin was 45.2% and the current ratio 1.40.", ledger).map((c) => c.cls), ["C", "C"]);
 });
 
 test("tool is sequential and its prompt footprint stays small (8k context)", () => {
@@ -82,6 +102,7 @@ test("tool is sequential and its prompt footprint stays small (8k context)", () 
     assert.equal(tool.executionMode, "sequential");
     const size = tool.description.length + JSON.stringify(tool.parameters).length;
     assert.ok(size < 2600, `${shape}: ${size} characters`);
+    assert.ok(size < 1950, `${shape}: ${size} characters (the budget with the finance functions; raise it only on purpose)`);
   }
 });
 

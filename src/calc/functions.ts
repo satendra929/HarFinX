@@ -9,7 +9,7 @@ export interface Vector {
 }
 export interface FnSpec {
   name: string;
-  category: "core" | "growth";
+  category: "core" | "growth" | "finance";
   sig: string;
   definition: string;
   minArgs: number;
@@ -21,6 +21,9 @@ export interface FnSpec {
 const one = (a: Num[]) => a[0];
 const needNonZero = (x: Num, fn: string, what: string) => {
   if (x.isZero()) throw new CalcError(`${fn}: ${what} is zero`);
+};
+const needPositive = (x: Num, fn: string, what: string) => {
+  if (x.lte(0)) throw new CalcError(`${fn}: ${what} must be greater than zero`);
 };
 
 export const FUNCTIONS: FnSpec[] = [
@@ -94,7 +97,7 @@ export const FUNCTIONS: FnSpec[] = [
     ],
   },
   {
-    name: "cagr", category: "growth", sig: "cagr(begin, end, years)", definition: "(end / begin) ^ (1 / years) - 1, as a fraction; begin and end must be positive, years > 0", minArgs: 3, maxArgs: 3,
+    name: "cagr", category: "growth", sig: "cagr(begin, end, years)", definition: "(end / begin) ^ (1 / years) - 1, as a fraction; years = the years between begin and end (2019 to 2023 is 4); begin and end must be positive, years > 0", minArgs: 3, maxArgs: 3,
     run: (a) => {
       // decimal.js isPositive() is true for zero, so compare explicitly
       if (a[0].lte(0) || a[1].lte(0)) throw new CalcError("cagr: begin and end must be positive");
@@ -103,9 +106,50 @@ export const FUNCTIONS: FnSpec[] = [
     },
     vectors: [{ args: ["100", "121", "2"], expect: "0.1" }, { args: ["1000", "2000", "10"], expect: "0.0717734625363" }],
   },
+  // Finance measures with one standard, unambiguous definition. Anything analysts define differently (leverage, interest
+  // coverage, returns, turnover, per-share figures, free cash flow) is left to an expression until each variant can be a
+  // separate named function: ambiguous metrics get separate names, never flags (decisions.md).
+  {
+    name: "gross_margin", category: "finance", sig: "gross_margin(gross_profit, revenue)", definition: "gross_profit / revenue, as a fraction (use pct for display as a percent); revenue must be greater than zero", minArgs: 2, maxArgs: 2,
+    run: (a) => {
+      needPositive(a[1], "gross_margin", "revenue");
+      return a[0].div(a[1]);
+    },
+    vectors: [{ args: ["30", "100"], expect: "0.3" }, { args: ["-5", "50"], expect: "-0.1" }, { args: ["1", "3"], expect: "0.333333333333" }],
+  },
+  {
+    name: "operating_margin", category: "finance", sig: "operating_margin(operating_income, revenue)", definition: "operating_income / revenue, as a fraction (use pct for display as a percent); revenue must be greater than zero", minArgs: 2, maxArgs: 2,
+    run: (a) => {
+      needPositive(a[1], "operating_margin", "revenue");
+      return a[0].div(a[1]);
+    },
+    vectors: [{ args: ["25", "200"], expect: "0.125" }, { args: ["-10", "80"], expect: "-0.125" }, { args: ["1", "3"], expect: "0.333333333333" }],
+  },
+  {
+    name: "net_margin", category: "finance", sig: "net_margin(net_income, revenue)", definition: "net_income / revenue, as a fraction (use pct for display as a percent); revenue must be greater than zero", minArgs: 2, maxArgs: 2,
+    run: (a) => {
+      needPositive(a[1], "net_margin", "revenue");
+      return a[0].div(a[1]);
+    },
+    vectors: [{ args: ["15", "60"], expect: "0.25" }, { args: ["-3", "12"], expect: "-0.25" }, { args: ["2", "3"], expect: "0.666666666667" }],
+  },
+  {
+    name: "current_ratio", category: "finance", sig: "current_ratio(current_assets, current_liabilities)", definition: "current_assets / current_liabilities, as a ratio (1.5 means 1.5 to 1); current_liabilities must be greater than zero", minArgs: 2, maxArgs: 2,
+    run: (a) => {
+      needPositive(a[1], "current_ratio", "current_liabilities");
+      return a[0].div(a[1]);
+    },
+    vectors: [{ args: ["150", "100"], expect: "1.5" }, { args: ["80", "100"], expect: "0.8" }, { args: ["1", "3"], expect: "0.333333333333" }],
+  },
+  {
+    name: "working_capital", category: "finance", sig: "working_capital(current_assets, current_liabilities)", definition: "current_assets - current_liabilities, in the units of the inputs", minArgs: 2, maxArgs: 2,
+    run: (a) => a[0].minus(a[1]),
+    vectors: [{ args: ["150", "100"], expect: "50" }, { args: ["80", "100"], expect: "-20" }, { args: ["0.5", "0.25"], expect: "0.25" }],
+  },
 ];
 
 export const FUNCTION_MAP: ReadonlyMap<string, FnSpec> = new Map(FUNCTIONS.map((f) => [f.name, f]));
+export const CATEGORIES: readonly string[] = [...new Set(FUNCTIONS.map((f) => f.category))];
 
 export function power(base: Num, exp: Num): Num {
   if (exp.abs().gt(1000)) throw new CalcError("power: |exponent| is limited to 1000");
@@ -118,6 +162,6 @@ export function power(base: Num, exp: Num): Num {
 export function helpText(topic?: string): string {
   const t = topic?.trim().toLowerCase();
   const list = t ? FUNCTIONS.filter((f) => f.name === t || f.category === t) : FUNCTIONS;
-  if (list.length === 0) return `No function or category "${topic}". Categories: core, growth. Functions: ${FUNCTIONS.map((f) => f.name).join(", ")}.`;
+  if (list.length === 0) return `No function or category "${topic}". Categories: ${CATEGORIES.join(", ")}. Functions: ${FUNCTIONS.map((f) => f.name).join(", ")}.`;
   return list.map((f) => `${f.sig}: ${f.definition}`).join("\n");
 }

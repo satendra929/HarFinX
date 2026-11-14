@@ -183,6 +183,7 @@ async function main(): Promise<void> {
   let calcInputs: string[] = []; // the printed numbers given to the calculator during this question
   agent.subscribe((e) => {
     if (e.type === "message_end" && e.message.role !== "user") record("message", { message: e.message }); // user text is in run_start
+    if (e.type === "message_end" && e.message.role === "assistant") guard.onReply(); // a limit refuses the first reply's calls softly, a later reply's calls for good
     if (e.type === "message_end" && e.message.role === "assistant" && !contextWarned) {
       const w = contextWarning(e.message.usage, agent.state.model.contextWindow);
       if (w) {

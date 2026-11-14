@@ -88,7 +88,6 @@ test("errors are clear and name the problem", () => {
   fails(() => calc("1 + 1", {}, { dp: 99 }), /dp must be/);
   fails(() => runProgram({}, []), /at least one step/);
   fails(() => runProgram({ a: "1" }, [{ name: "a", expr: "1" }]), /already used/);
-  fails(() => runProgram({ sum: "1" }, [{ name: "r", expr: "1" }]), /function name/);
   fails(() => runProgram({ "1bad": "1" }, [{ name: "r", expr: "1" }]), /must start with a letter/);
 });
 
@@ -226,4 +225,33 @@ test("cross-check: 400 random expressions agree with exact rational arithmetic (
     assert.equal(val(t.src), refSig12(t.q), t.src);
     checked++;
   }
+});
+
+test("a step or input may be named like a function: a name is told from a call by the bracket", () => {
+  // the failure seen live: a small model named its step `ratio` and then `cagr`, and was refused twelve times in a row
+  const r = runProgram({ rev2020: "65,398", rev2022: "65,984" }, [{ name: "ratio", expr: "rev2022 / rev2020" }, { name: "cagr", expr: "pow(ratio, 1 / 2) - 1", dp: 4 }]);
+  assert.equal(r.steps[1].shown, "0.0045");
+  // the same name as a value and as a call in one expression
+  assert.equal(runProgram({ sum: "10" }, [{ name: "avg", expr: "sum + avg(sum, 20)" }]).steps[0].shown, "25");
+  assert.equal(calc("ratio(1, 4)", { ratio: "2" }).shown, "0.25");
+  // the definition list names only the functions actually called
+  assert.deepEqual(runProgram({ a: "1", b: "4" }, [{ name: "ratio", expr: "a / b" }]).steps[0].calls, []);
+});
+
+test("finance functions: refuse a zero or negative divisor, accept negative profit, keep exact arithmetic", () => {
+  for (const fn of ["gross_margin", "operating_margin", "net_margin"]) {
+    fails(() => calc(fn + "(5, 0)"), /revenue must be greater than zero/);
+    fails(() => calc(fn + "(5, -10)"), /revenue must be greater than zero/);
+    assert.equal(calc(fn + "(loss, rev)", { loss: "(473)", rev: "11,503" }, { dp: 4 }).shown, "-0.0411"); // parentheses are a negative, so a loss gives a negative margin
+    assert.equal(calc(fn + "(tiny, huge)", { tiny: "0.000001", huge: "1000000000000000" }).value.toString(), "0.000000000000000000001");
+  }
+  fails(() => calc("current_ratio(5, 0)"), /current_liabilities must be greater than zero/);
+  fails(() => calc("current_ratio(5, -1)"), /current_liabilities must be greater than zero/);
+  fails(() => calc("working_capital(1)"), /takes 2 argument/);
+  fails(() => calc("gross_margin(1, 2, 3)"), /takes 2 argument/);
+  assert.equal(calc("working_capital(ca, cl)", { ca: "(1,000)", cl: "500" }).shown, "-1500"); // negative current assets are a data problem, not ours: arithmetic stays exact
+});
+
+test("cagr: the definition says what years means", () => {
+  assert.match(helpText("cagr"), /years between begin and end \(2019 to 2023 is 4\)/);
 });

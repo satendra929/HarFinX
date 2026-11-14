@@ -125,13 +125,17 @@ test("guard.blocked: the reason the first call was refused, kept for the questio
   assert.equal(guard.tripped, undefined);
 });
 
-test("guard.blocked: a call over the limit is blocked as a trip, not as a budget note (the CLI tells them apart by `tripped`)", async () => {
+test("guard.blocked: a soft stop sets `blocked` without `tripped` (a budget note); a refusal in a later reply sets both", async () => {
   const { guard } = make();
   guard.startRun();
+  guard.onReply();
   for (let i = 0; i < 3; i++) guard.onToolStart("t", {});
   await guard.beforeToolCall({ toolCall: { name: "t" } } as any);
-  assert.ok(guard.tripped);
+  assert.equal(guard.tripped, undefined);
   assert.match(guard.blocked!, /tool-call limit/);
+  guard.onReply();
+  guard.onToolStart("t", {});
+  assert.ok(guard.tripped);
 });
 
 const make = (over = {}) => {
@@ -151,10 +155,13 @@ test("guard: routine calls are not logged (the CLI shows them dim); they still c
   assert.deepEqual(events.map((e) => e.kind), ["call", "call"]);
 });
 
-test("guard: going over the call limit is logged once (yellow in the CLI), trips, and the over-limit call is not shown as 'call 3 of 2'", () => {
+test("guard: the stop is logged once (yellow in the CLI) when the model ignores a soft stop, and the over-limit call is not shown as 'call 3 of 2'", () => {
   const { guard, logs, events } = make();
   guard.startRun();
-  for (let i = 0; i < 4; i++) guard.onToolStart("read_page", {});
+  guard.onReply();
+  for (let i = 0; i < 3; i++) guard.onToolStart("read_page", {});
+  guard.onReply();
+  guard.onToolStart("read_page", {});
   assert.equal(logs.length, 1);
   assert.match(logs[0], /^stopping this question: tool-call limit reached \(2 per question\); the call to "read_page" is not run$/);
   assert.ok(guard.tripped);
