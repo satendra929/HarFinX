@@ -121,7 +121,7 @@ export function calculateTool(ledger: Ledger, shape: CalcShape = "steps"): Agent
       const used = [...new Set(run.steps.flatMap((s) => s.calls))].map((n) => FUNCTION_MAP.get(n)).filter((f) => f !== undefined);
       if (used.length) lines.push("definitions: " + used.map((f) => `${f.sig} = ${f.definition}`).join("; "));
       for (const w of warnings) lines.push(`WARNING: ${w}`);
-      lines.push(QUOTE + " State the definition you used.");
+      lines.push(QUOTE + " Name the definition only if it is not obvious.");
 
       return {
         content: [{ type: "text", text: lines.join("\n") }],

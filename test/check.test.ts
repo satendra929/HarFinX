@@ -41,17 +41,14 @@ test("summarizeCheck counts classes, leaves non-figures out of 'figures', and li
   assert.match(s.unverified[0].context, /13\.6%/);
 });
 
-test("checkLine: a warning lists the unverified figures; a clean answer gets a plain line; no figures, no line", () => {
+test("checkLine: a warning lists the unverified figures; a clean answer, or no figures, gets no line", () => {
   const warn = checkLine(checkAnswer("Margin 11.4% and 13.6%.", ledger()))!;
   assert.equal(warn.warn, true);
   assert.equal(warn.text, "[check] 1 figure not traced to your file, your question or the calculator: 13.6%. Verify it against the source.");
 
-  const clean = checkLine(checkAnswer("Net sales were 11,503 and the margin 11.4%.", ledger()))!;
-  assert.equal(clean.warn, false);
-  assert.equal(clean.text, "[check] 2 figures traced to your file, your question or the calculator (traceable, not necessarily correct)");
-
-  const one = checkLine(checkAnswer("Net sales were 11,503.", ledger()))!;
-  assert.match(one.text, /^\[check\] 1 figure traced/);
+  // everything traced: no line (the counts stay in the audit log)
+  assert.equal(checkLine(checkAnswer("Net sales were 11,503 and the margin 11.4%.", ledger())), undefined);
+  assert.equal(checkLine(checkAnswer("Net sales were 11,503.", ledger())), undefined);
 
   assert.equal(checkLine(checkAnswer("No numbers here, and only the year FY2021.", ledger())), undefined);
   assert.equal(checkLine(summarizeCheck([])), undefined);

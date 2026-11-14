@@ -7,7 +7,7 @@ import { nearestHeader, sectionTitle } from "./documents/pages.ts";
 import { oneLine } from "./feedback.ts";
 
 /** Shown above the entries, identically every time. */
-export const DISCLAIMER = "References · number match only (not row, period or units): confirm on the page";
+export const DISCLAIMER = "References · number match only: confirm on the page";
 
 export interface SourceLimits {
   /** A figure on more pages than this is not listed (a capped list would look like the best matches). */
@@ -15,7 +15,7 @@ export interface SourceLimits {
   rowsPerPage: number;
   entries: number;
 }
-export const DEFAULT_SOURCE_LIMITS: SourceLimits = { pagesPerFigure: 3, rowsPerPage: 4, entries: 6 };
+export const DEFAULT_SOURCE_LIMITS: SourceLimits = { pagesPerFigure: 3, rowsPerPage: 2, entries: 4 };
 
 export interface SourceFigure {
   /** As the source prints it. */

@@ -219,11 +219,11 @@ test("a figure that also appears inside a longer number is marked where it reall
 });
 
 const THREE_M = ["Disaggregated revenue information", "Year ended December 31", "(Millions)  |  2022  |  2021  |  2020", "Other Consumer  |  —  |  (1,011)  |  1", "Total Company  |  $ 34,229  |  $ 35,355  |  $ 32,184", "Worldwide  |  $ 34,229  |  $ 35,355  |  $ 32,184"];
-function threeM(answer: string, opts?: Parameters<typeof formatSources>[1]): string[] {
+function threeM(answer: string, opts?: Parameters<typeof formatSources>[1], limits = DEFAULT_SOURCE_LIMITS): string[] {
   const l = new Ledger();
   l.addUser("q");
   l.addSource("f p.60", THREE_M.join("\n"), { file: "3M.pdf", page: 60, printed: "60", pageLines: THREE_M, lineOffset: 0 });
-  return formatSources(buildSources(answerTokens(answer, l), [], l), opts);
+  return formatSources(buildSources(answerTokens(answer, l), [], l, limits), opts);
 }
 
 test("a units line that is also the column heading line is shown once as units, and the period once; the printed page shows only when it differs", () => {
@@ -245,7 +245,7 @@ test("a dash cell is a cell: the column of a figure next to it is right, and the
 });
 
 test("rows with the same figures under different labels become one row; different figures stay apart", () => {
-  const lines = threeM("Sales $34,229, and 1 for other, (1,011).");
+  const lines = threeM("Sales $34,229, and 1 for other, (1,011).", undefined, { ...DEFAULT_SOURCE_LIMITS, rowsPerPage: 10 }); // merging rows does not depend on the row limit
   assert.equal(lines.filter((x) => x.includes("Total Company")).length, 1);
   assert.ok(lines.some((x) => x.includes("Total Company = Worldwide")));
   assert.ok(lines.some((x) => x.startsWith("    Other Consumer")));
@@ -285,7 +285,7 @@ test("more rows than the limit on one page: the rest are counted, not silently d
   await read(l, [page], 1);
   const lines = formatSources(buildSources(answerTokens("5,000", l), [], l));
   assert.equal(lines.filter((x) => x.includes("[5,000]")).length, DEFAULT_SOURCE_LIMITS.rowsPerPage);
-  assert.ok(lines.includes("    and 3 more rows"));
+  assert.ok(lines.includes(`    and ${7 - DEFAULT_SOURCE_LIMITS.rowsPerPage} more rows`));
 });
 
 test("a text file read in overlapping chunks, or twice, lists each row once (the whole line, not a cut-off piece)", () => {
@@ -349,8 +349,8 @@ test("pages from the current question come first; entries beyond the limit are c
   for (let p = 1; p <= 9; p++) await read(many, pages, p);
   const r2 = buildSources(answerTokens(Array.from({ length: 9 }, (_, i) => String(3000 + i)).join(", "), many), [], many);
   assert.equal(r2.entries.length, DEFAULT_SOURCE_LIMITS.entries);
-  assert.equal(r2.moreEntries, 3);
-  assert.equal(formatSources(r2).at(-1), "  and 3 more pages");
+  assert.equal(r2.moreEntries, 9 - DEFAULT_SOURCE_LIMITS.entries);
+  assert.equal(formatSources(r2).at(-1), `  and ${9 - DEFAULT_SOURCE_LIMITS.entries} more pages`);
 });
 
 test("one file spelled two ways is one entry", async () => {

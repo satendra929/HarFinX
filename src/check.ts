@@ -48,7 +48,7 @@ export function checkAnswer(text: string, ledger: Ledger): CheckSummary {
   return summarizeCheck(checkText(text, ledger));
 }
 
-/** The line to show the user, or undefined when the answer has no figures. `warn` is true when something is unverified. */
+/** The line to show the user: a warning when a figure is unverified, otherwise nothing. */
 export function checkLine(s: CheckSummary): { text: string; warn: boolean } | undefined {
   if (s.figures === 0) return undefined;
   if (s.unverified.length > 0) {
@@ -60,8 +60,5 @@ export function checkLine(s: CheckSummary): { text: string; warn: boolean } | un
       text: `[check] ${n} figure${n === 1 ? "" : "s"} not traced to your file, your question or the calculator: ${listed.join(", ")}${more > 0 ? ` and ${more} more` : ""}. Verify ${n === 1 ? "it" : "them"} against the source.`,
     };
   }
-  return {
-    warn: false,
-    text: `[check] ${s.figures} figure${s.figures === 1 ? "" : "s"} traced to your file, your question or the calculator (traceable, not necessarily correct)`,
-  };
+  return undefined; // everything traced: nothing to say (the numbers are in the audit log); a clean line under every answer was noise
 }
