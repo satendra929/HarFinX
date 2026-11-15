@@ -39,7 +39,7 @@ interface Rig {
   text: () => string;
 }
 
-function rig(opts: { failAuditAfter?: number; pages?: string[]; statementTool?: boolean } = {}): Rig {
+function rig(opts: { failAuditAfter?: number; pages?: string[]; statementTool?: boolean; fileListFirst?: boolean; workspace?: Workspace } = {}): Rig {
   const faux = fauxProvider();
   const models = createModels({ identity: { attribution: null } });
   models.setProvider(faux.provider);
@@ -54,7 +54,7 @@ function rig(opts: { failAuditAfter?: number; pages?: string[]; statementTool?: 
     modelId: "fake",
     reasoning: reasoningProfile("ollama", undefined, "fake"),
     streamFn: (m, c, o) => models.streamSimple(m, c, o),
-    workspace: ws,
+    workspace: opts.workspace ?? ws,
     audit: {
       write(type, data) {
         if (opts.failAuditAfter !== undefined && audit.length >= opts.failAuditAfter) throw new Error("disk full");
@@ -66,6 +66,7 @@ function rig(opts: { failAuditAfter?: number; pages?: string[]; statementTool?: 
     context: cfg.context,
     docs: createDocStore(ws, async (): Promise<ParsedPdf> => ({ pages: opts.pages ?? [PAGE] })),
     ...(opts.statementTool === undefined ? {} : { statementTool: opts.statementTool }),
+    ...(opts.fileListFirst === undefined ? {} : { fileListFirst: opts.fileListFirst }),
     chat: false,
     links: false,
   });
@@ -270,4 +271,78 @@ test("get_line_item: it is off unless asked for: no tool and no prompt sentence"
   const start = find(r, "session_start")[0].data;
   assert.ok(!start.tools.includes("get_line_item"));
   assert.doesNotMatch(start.systemPrompt, /get_line_item/);
+});
+
+const seenFirst = (r: Rig) => {
+  const box = { text: "" };
+  r.faux.setResponses([
+    (context) => {
+      box.text = JSON.stringify(context.messages.filter((m: any) => m.role === "user"));
+      return fauxAssistantMessage("ok");
+    },
+  ]);
+  return box;
+};
+
+test("the first question of a conversation carries the small workspace's file list; later ones and the checks do not", async () => {
+  const r = rig();
+  const first = seenFirst(r);
+  await r.engine.ask("What were net sales in 2022?");
+  assert.match(first.text, /What were net sales in 2022\?/);
+  assert.match(first.text, /Files in the workspace, listed by the harness/);
+  assert.match(first.text, /\[2 files in the workspace\]/); // a.pdf and a text file another test wrote
+  assert.match(first.text, /a\.pdf {2}\(4 B\)/);
+  assert.equal(find(r, "file_listing").length, 1);
+  assert.equal(find(r, "file_listing")[0].data.count, 2);
+  assert.equal(find(r, "run_start")[0].data.text, "What were net sales in 2022?"); // the audit keeps the user's own words
+  // second question in the same conversation: no list
+  const second = seenFirst(r);
+  await r.engine.ask("And net income?");
+  assert.doesNotMatch(second.text.split("And net income?")[1] ?? "", /Files in the workspace/);
+  assert.equal(find(r, "file_listing").length, 1);
+  // a new conversation lists again
+  r.engine.newConversation();
+  const third = seenFirst(r);
+  await r.engine.ask("Again?");
+  assert.match(third.text, /Files in the workspace/);
+  assert.equal(find(r, "file_listing").length, 2);
+});
+
+test("the file list is left out when the switch is off, when the workspace is large or empty", async () => {
+  const off = rig({ fileListFirst: false });
+  const a = seenFirst(off);
+  await off.engine.ask("Q?");
+  assert.doesNotMatch(a.text, /Files in the workspace/);
+  const big = path.join(base, "big");
+  fs.mkdirSync(big);
+  for (let i = 0; i < 21; i++) fs.writeFileSync(path.join(big, `f${i}.pdf`), "x");
+  const bigRig = rig({ workspace: openWorkspace(big, path.join(base, "project"), []) });
+  const b = seenFirst(bigRig);
+  await bigRig.engine.ask("Q?");
+  assert.doesNotMatch(b.text, /Files in the workspace/);
+  assert.equal(find(bigRig, "file_listing").length, 0);
+  const none = path.join(base, "none");
+  fs.mkdirSync(none);
+  const emptyRig = rig({ workspace: openWorkspace(none, path.join(base, "project"), []) });
+  const e = seenFirst(emptyRig);
+  await emptyRig.engine.ask("Q?");
+  assert.doesNotMatch(e.text, /Files in the workspace/);
+});
+
+test("each assistant reply is recorded with its timing and character counts", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 32,765.")]);
+  await r.engine.ask("What were net sales in 2022?");
+  const replies = find(r, "message").filter((m) => m.data.message.role === "assistant");
+  assert.equal(replies.length, 2);
+  for (const m of replies) {
+    const t = m.data.timing;
+    assert.equal(typeof t.totalMs, "number");
+    assert.ok(t.totalMs >= 0);
+    assert.ok(t.ttftMs === null || t.ttftMs <= t.totalMs);
+    for (const k of ["thinkingChars", "textChars", "callChars"]) assert.equal(typeof t[k], "number");
+  }
+  assert.ok(replies[0].data.timing.callChars > 0); // the tool call
+  assert.equal(replies[1].data.timing.textChars, "Net sales were 32,765.".length);
+  assert.equal(find(r, "message").find((m) => m.data.message.role === "toolResult")!.data.timing, undefined); // only replies carry timing
 });

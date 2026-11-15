@@ -53,6 +53,7 @@ async function main(): Promise<void> {
     filesEnabled,
     calcShape: cfg.calcShape,
     statementTool: cfg.statementTool,
+    fileListFirst: cfg.fileListFirst,
     context: cfg.context,
     chat: !parsed.prompt,
     links: linkSupported,

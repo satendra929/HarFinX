@@ -9,6 +9,14 @@ export function humanSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** The listing text the tool returns: a count line, then "path  (size)" per file. The engine uses it too, so both read the same. */
+export function formatListing(files: readonly { path: string; size: number }[], truncated: boolean): string {
+  if (files.length === 0) return "[the workspace folder has no files]";
+  const lines = files.map((f) => `${f.path.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")}  (${humanSize(f.size)})`);
+  const head = `[${files.length} file${files.length === 1 ? "" : "s"} in the workspace${truncated ? "; more exist, only the first ones are shown" : ""}]`;
+  return `${head}\n${lines.join("\n")}`;
+}
+
 export function listFilesTool(workspace: Workspace): AgentTool<any> {
   return {
     name: "list_files",
@@ -17,10 +25,7 @@ export function listFilesTool(workspace: Workspace): AgentTool<any> {
     parameters: { type: "object", properties: {}, additionalProperties: false },
     execute: async () => {
       const { files, truncated } = workspace.list();
-      if (files.length === 0) return { content: [{ type: "text", text: "[the workspace folder has no files]" }], details: { count: 0 } };
-      const lines = files.map((f) => `${f.path}  (${humanSize(f.size)})`);
-      const head = `[${files.length} file${files.length === 1 ? "" : "s"} in the workspace${truncated ? "; more exist, only the first ones are shown" : ""}]`;
-      return { content: [{ type: "text", text: `${head}\n${lines.join("\n")}` }], details: { count: files.length, truncated } };
+      return { content: [{ type: "text", text: formatListing(files, truncated) }], details: { count: files.length, truncated } };
     },
   };
 }

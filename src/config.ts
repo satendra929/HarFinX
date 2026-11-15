@@ -15,6 +15,8 @@ export interface Config {
   auditDir: string;
   allowCloudFiles: boolean;
   calcShape: "steps" | "expr";
+  /** FILE_LIST_FIRST=off: do not put the file list in the first message (for A/B runs). */
+  fileListFirst: boolean;
   /** STATEMENT_TOOL=on: add the get_line_item tool and its prompt sentence. Off by default: the first live run (2026-11-15) showed no net gain. */
   statementTool: boolean;
   /** Override of the provider's reasoning-history policy (src/reasoning.ts); undefined means the profile default. */
@@ -95,6 +97,7 @@ export function loadConfig(overrides: { model?: string } = {}): Config {
     auditDir: env.AUDIT_DIR?.trim() || "audit",
     allowCloudFiles: env.ALLOW_CLOUD_FILES?.trim() === "1",
     calcShape: env.CALC_SHAPE?.trim() === "expr" ? "expr" : "steps",
+    fileListFirst: env.FILE_LIST_FIRST?.trim().toLowerCase() !== "off",
     statementTool: env.STATEMENT_TOOL?.trim().toLowerCase() === "on",
     reasoningHistory,
     context: parseContextConfig(env),
