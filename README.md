@@ -7,10 +7,25 @@
 ## What it does
 
 - Terminal chat with a local model (through Ollama) about your financial files.
-- Answers questions about filings and reports in PDF (10-K, 10-Q, earnings releases): it maps the filing's Items, statements and Notes, finds the right page, reads the page or just the lines around some words, and cites the file and page. Text-based PDFs only; Excel is not supported yet.
+- Answers questions about filings and reports in PDF (10-K, 10-Q, earnings releases): it maps the filing's Items, statements and Notes, finds the right page, reads the page or just the lines around some words, and cites the file and page. Text-based PDFs only; Excel is not supported yet. A small workspace's file list goes with the first question (`FILE_LIST_FIRST=off` disables it).
+- Optional statement lookup (`STATEMENT_TOOL=on`): fetches one of 15 common balance sheet, income statement or cash flow lines of a 10-K or 10-Q as printed, with units and columns, and checks the balance sheet balances. If unsure it says so and the model reads pages instead.
 - Exact arithmetic: the model never does maths itself. A decimal calculator tool does it, on numbers copied from your file, with named definitions for common measures (margins, free cash flow, quick ratio, net debt, DSO, ROE and more).
 - Traceable figures: after each answer it checks that every figure comes from your file, your question or the calculator, and shows where in the pages read each one appears.
 - Safe by default: one fixed workspace folder, limits per question, no file access for cloud models, and a local audit log of every session.
+
+## How it compares
+
+Same question, three tools, 15 Nov 2026: *Which business segment of 3M was the most profitable in 2022?* The harness had the 3M 2022 10-K in its workspace.
+
+![Google, Bing and HarFinX answering the same question](assets/comparison-3m-segment.png)
+
+| | Answer | Checked against the filing (10-K p.25) | Shows where it read it |
+|---|---|---|---|
+| Google AI Overview | Health Care, $1.876 billion | Segment right, figure wrong (printed: $1,815 million) | Links to a website |
+| Bing AI Overview | Safety and Industrial | Wrong (it earned $1,199 million) | Links to websites, no figures |
+| HarFinX (local model) | Health Care, $1,815 million | Right | File, page and the matching row |
+
+One question is an illustration, not a benchmark.
 
 ## Requirements (Windows)
 
@@ -56,7 +71,7 @@ Two models have short names: `gemma` (the default) and `qwen`; any installed Oll
 - **Limits per question.** About 8 tool calls and 12,000 characters of file text. At a limit the model is told to answer from what it has already read (calculator calls may run a little further); if it asks for more anyway, the question is stopped. Each tool call shows as a dim one-line note; a yellow `[guard]` line means a limit acted.
 - **Untrusted file contents.** Text inside a file is data, not instructions; the guards limit what the model can reach, not what it says.
 - **Model quirks.** An empty or looping reply is discarded and retried once.
-- **Audit log.** Every session writes `audit/session-<timestamp>-<id>.jsonl` (set by `AUDIT_DIR`): questions, answers, tool calls and guard decisions. It is append-only and local, and contains your data, so treat it as such.
+- **Audit log.** Every session writes `audit/session-<timestamp>-<id>.jsonl` (set by `AUDIT_DIR`): questions, answers (with reply times), tool calls and guard decisions. It is append-only and local, and contains your data, so treat it as such.
 - **Local by default.** With Ollama everything stays on your machine and no identifying headers are sent.
 
 ## Using Claude (optional, paid)
