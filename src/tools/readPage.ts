@@ -4,7 +4,7 @@
 // File access goes through the document store and the workspace; this file never touches node:fs.
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { DocStore } from "../documents/store.ts";
-import { carriedHeader, findTerms, nearestHeader, pageLines, passage, sectionTitle, splitPage } from "../documents/pages.ts";
+import { carriedHeader, findTerms, markUnlabeled, nearestHeader, pageLines, passage, sectionTitle, splitPage } from "../documents/pages.ts";
 import type { PageVisits } from "../documents/visits.ts";
 import { printedLabelOf } from "../documents/printed.ts";
 import type { SourceMeta } from "../provenance.ts";
@@ -69,7 +69,8 @@ export function readPageTool(docs: DocStore, onShown?: (label: string, text: str
         visits?.opened(params.path, params.page, "passage");
         let out = `[page ${params.page} of ${total} in ${params.path}: lines around "${echo}"]\n`;
         if (carried.length) out += `[repeated from above on the page]\n${carried.join("\n")}\n`;
-        out += windows.map(([a, b]) => lines.slice(a, b + 1).join("\n")).join("\n[...]\n") + "\n";
+        const shown = markUnlabeled(lines);
+        out += windows.map(([a, b]) => shown.slice(a, b + 1).join("\n")).join("\n[...]\n") + "\n";
         const whole = windows.length === 1 && windows[0][0] === 0 && windows[0][1] === lines.length - 1;
         out += whole ? `[end of page ${params.page}]` : more ? `[page ${params.page}: more matching lines follow; call read_page without find for the whole page]` : `[page ${params.page}: part of the page is shown; call read_page without find for the whole page]`;
         return { content: [{ type: "text", text: out }], details: { path: params.path, page: params.page, pages: total, find: echo, windows, matched: true, moreWindows: more } };
@@ -93,7 +94,7 @@ export function readPageTool(docs: DocStore, onShown?: (label: string, text: str
         const carried = carriedHeader(text.split("\n"));
         if (carried.length) out += `[repeated from the top of the page]\n${carried.join("\n")}\n`;
       }
-      out += body + "\n";
+      out += markUnlabeled(body.split("\n")).join("\n") + "\n";
       // Pages a search listed in this question that are still unopened: said where the model decides what to read next.
       const waiting = visits?.pending(params.path, [params.page]) ?? [];
       if (waiting.length) out += `[listed by search, not opened: ${waiting.map((p) => `p.${p}`).join(", ")}]\n`;

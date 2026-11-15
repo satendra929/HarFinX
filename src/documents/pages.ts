@@ -173,3 +173,24 @@ export function splitPage(text: string, max = PART_CHARS): string[] {
   flush();
   return parts;
 }
+
+/** Text added after a table row whose first cell is already a figure: the PDF text layer held no label for it. No digits. */
+export const NO_LABEL_MARK = "  [no label in the file]";
+const FIGURE_CELL = /^[(\-–—$€£¥]*\d[\d,.]*\)?%?$|^[—–-]$/;
+
+/**
+ * A table row with no label: at least two cells, the first (the label's place) already a figure, every non-empty cell a
+ * figure or a dash, and not a row of column headings ("2022 | 2021") or a row led by a year.
+ */
+export function isUnlabeledRow(line: string): boolean {
+  if (!line.includes("|")) return false;
+  const cells = line.split("|").map((c) => c.trim());
+  if (cells.length < 2 || !FIGURE_CELL.test(cells[0]) || COLUMN_CELL.test(cells[0])) return false;
+  const filled = cells.filter((c) => c !== "");
+  return filled.every((c) => FIGURE_CELL.test(c)) && filled.some((c) => /\d/.test(c));
+}
+
+/** The lines as the model should see them: unlabeled rows carry the mark. The line count never changes. Display only: the ledger gets the unmarked lines. */
+export function markUnlabeled(lines: readonly string[]): string[] {
+  return lines.map((l) => (isUnlabeledRow(l) ? l + NO_LABEL_MARK : l));
+}
