@@ -3,7 +3,7 @@
 import { FUNCTION_MAP } from "./functions.ts";
 import { CalcError, D, checkFinite, displayLossPercent, parseInputLiteral, shownValue, sig12, type Num } from "./num.ts";
 import { callsOf, literalsOf, parse, type Node } from "./parse.ts";
-import { power } from "./functions.ts";
+import { nearNames, power } from "./functions.ts";
 
 export const RUN_LIMITS = { maxInputs: 60, maxSteps: 30, maxCalls: 100, maxArgs: 50 };
 
@@ -84,7 +84,10 @@ export function runProgram(inputs: Record<string, string>, steps: StepInput[]): 
       }
       case "call": {
         const fn = FUNCTION_MAP.get(n.name);
-        if (!fn) throw new CalcError(`${where}: unknown function "${n.name}". Use help to list functions`);
+        if (!fn) {
+          const near = nearNames(n.name);
+          throw new CalcError(`${where}: unknown function "${n.name}". ${near.length ? `Did you mean ${near.join(", ")}? ` : ""}Use help to list functions`);
+        }
         if (++calls > RUN_LIMITS.maxCalls) throw new CalcError(`too many function calls (limit ${RUN_LIMITS.maxCalls})`);
         if (n.args.length < fn.minArgs || n.args.length > Math.min(fn.maxArgs, RUN_LIMITS.maxArgs)) {
           throw new CalcError(`${where}: ${fn.sig} takes ${fn.minArgs === fn.maxArgs ? fn.minArgs : `${fn.minArgs} to ${fn.maxArgs}`} argument(s), got ${n.args.length}`);

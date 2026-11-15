@@ -9,10 +9,17 @@ import { Ledger, classify, extractNumbers, normalise } from "../provenance.ts";
 
 export type CalcShape = "steps" | "expr";
 
+// Names a function offers in two variants (NAME_ending, NAME_average) are listed once as a stem.
+const VARIANT = /^(.+)_(ending|average)$/;
+const stems = [...new Set(FUNCTIONS.flatMap((f) => VARIANT.exec(f.name)?.[1] ?? []))];
+const FUNCTION_NAMES =
+  FUNCTIONS.filter((f) => !VARIANT.test(f.name)).map((f) => f.name).join(", ") +
+  `; and ${stems.join(", ")}, each as NAME_ending or NAME_average`;
+
 const COMMON =
   "Exact decimal calculator. Use it for EVERY calculation, ratio, percentage, average, growth rate and unit conversion; never compute in your head. " +
   'Put each number from the source in `inputs` exactly as printed, with a short name that starts with a letter (e.g. {"sales":"11,503","loss":"(473)","rate":"3.06%"}); never type a number you worked out yourself. ' +
-  "Expressions may use input names, earlier step names, + - * / ^, parentheses and the functions " + FUNCTIONS.map((f) => f.name).join(", ") + " (ask `help` for definitions). " +
+  "Expressions may use input names, earlier step names, + - * / ^, parentheses and the functions " + FUNCTION_NAMES + " (ask `help` with a name or a category for definitions and argument order). " +
   "Rates are fractions (0.05); set pct:true to show a percent and dp for the decimal places the question asks for. ";
 const EXAMPLE_STEPS = 'Example: inputs {"sales":"11,503","op":"1,306"}, steps [{"name":"margin","expr":"op / sales","dp":1,"pct":true}]. ';
 const EXAMPLE_EXPR = 'Example: inputs {"sales":"11,503","op":"1,306"}, expr "op / sales", dp 1, pct true. ';

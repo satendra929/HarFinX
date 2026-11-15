@@ -7,8 +7,8 @@
 ## What it does
 
 - Terminal chat with a local model (through Ollama) about your financial files.
-- Answers questions about filings and reports in PDF (10-K, 10-Q, earnings releases): it finds the right page, reads it and cites the file and page. Text-based PDFs only; Excel is not supported yet.
-- Exact arithmetic: the model never does maths itself. A decimal calculator tool does it, on numbers copied from your file.
+- Answers questions about filings and reports in PDF (10-K, 10-Q, earnings releases): it maps the filing's Items, statements and Notes, finds the right page, reads the page or just the lines around some words, and cites the file and page. Text-based PDFs only; Excel is not supported yet.
+- Exact arithmetic: the model never does maths itself. A decimal calculator tool does it, on numbers copied from your file, with named definitions for common measures (margins, free cash flow, quick ratio, net debt, DSO, ROE and more).
 - Traceable figures: after each answer it checks that every figure comes from your file, your question or the calculator, and shows where in the pages read each one appears.
 - Safe by default: one fixed workspace folder, limits per question, no file access for cloud models, and a local audit log of every session.
 

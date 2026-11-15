@@ -1,6 +1,7 @@
 // Splitting one page of text into parts the model can read within the per-result limit, without cutting a table row,
 // and finding the header lines (units, years) that a later part needs in order to be read against the right column.
 // Pure: no I/O.
+import { tokenize } from "./search.ts";
 
 /** Characters of page text per part. Below the guard's per-result cap, which also has to hold the header and footer. */
 export const PART_CHARS = 4000;
@@ -72,6 +73,66 @@ export function nearestHeader(lines: readonly string[], rowNo: number): RowHeade
     if (out.units !== undefined && out.columns !== undefined && out.period !== undefined) break;
   }
   return out;
+}
+
+/** Characters of page text a passage may hold (hit lines always whole, context added while it fits). */
+export const PASSAGE_CHARS = 1500;
+export const PASSAGE_CONTEXT = 3; // lines above and below a hit
+const PASSAGE_WINDOWS = 3;
+const FIND_CHARS = 200;
+
+/** The search terms of a `find` text (the search tokeniser: lower case, stop words dropped, light stemming). Empty means "no usable words". */
+export function findTerms(find: string): string[] {
+  return [...new Set(tokenize(find.slice(0, FIND_CHARS)))];
+}
+
+/**
+ * The lines of a page around the words in `find`. A line scores the number of distinct terms it holds; the best-scoring
+ * lines are the hits, and the best score must reach half of the terms (rounded up), else there is no match. Hit lines come
+ * first and whole; context is then added outward, one line each side at a time, while the text stays within PASSAGE_CHARS.
+ * Windows are inclusive [first, last] line indexes in page order, at most three. Undefined when nothing matches.
+ */
+export function passage(lines: readonly string[], find: string, chars = PASSAGE_CHARS): { windows: [number, number][]; more: boolean } | undefined {
+  const terms = findTerms(find);
+  if (terms.length === 0) return undefined;
+  const scores = lines.map((l) => {
+    const toks = new Set(tokenize(l));
+    return terms.filter((t) => toks.has(t)).length;
+  });
+  const best = Math.max(0, ...scores);
+  if (best === 0 || best < Math.ceil(terms.length / 2)) return undefined;
+  const hits = scores.flatMap((s, i) => (s === best ? [i] : []));
+
+  const chosen = new Set<number>();
+  let size = 0;
+  const take = (i: number, force = false) => {
+    if (chosen.has(i) || i < 0 || i >= lines.length) return false;
+    if (!force && size + lines[i].length + 1 > chars) return false;
+    chosen.add(i);
+    size += lines[i].length + 1;
+    return true;
+  };
+  let shown = 0;
+  for (const h of hits) {
+    if (chosen.has(h)) continue;
+    if (shown >= PASSAGE_WINDOWS) break;
+    if (take(h, chosen.size === 0)) shown++;
+  }
+  const picked = [...chosen];
+  for (let d = 1; d <= PASSAGE_CONTEXT; d++) {
+    for (const h of picked) {
+      take(h - d);
+      take(h + d);
+    }
+  }
+  const sorted = [...chosen].sort((a, b) => a - b);
+  const windows: [number, number][] = [];
+  for (const i of sorted) {
+    const last = windows[windows.length - 1];
+    if (last && i === last[1] + 1) last[1] = i;
+    else windows.push([i, i]);
+  }
+  return { windows, more: hits.some((h) => !chosen.has(h)) };
 }
 
 /** Cuts a line longer than `max` at spaces (or hard, if it has none). */

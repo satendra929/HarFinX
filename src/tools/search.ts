@@ -6,11 +6,13 @@ import type { DocStore } from "../documents/store.ts";
 import type { ParsedPdf } from "../documents/pdf.ts";
 import { buildIndex, type PageIndex } from "../documents/search.ts";
 import { cleanQuery } from "../documents/query.ts";
+import type { PageVisits } from "../documents/visits.ts";
+import { findSection, outlineOf, type Outline } from "../documents/outline.ts";
 
 const TOP = 5;
 const MAX_QUERY_CHARS = 200;
 
-export function searchTool(docs: DocStore): AgentTool<any> {
+export function searchTool(docs: DocStore, visits?: PageVisits, build: (pages: readonly string[]) => Outline = outlineOf): AgentTool<any> {
   const indexes = new WeakMap<ParsedPdf, PageIndex>(); // one index per parsed document, built on first search
   return {
     name: "search",
@@ -19,17 +21,18 @@ export function searchTool(docs: DocStore): AgentTool<any> {
       "Find the pages of a PDF (such as a 10-K) that best match some words; then read a page with read_page. " +
       "It matches words printed in the file, so search for row labels or statement names (for example " +
       "'total current assets', 'consolidated statements of operations'), not for concepts the filing may not print " +
-      "(such as 'net working capital'). Returns up to 5 pages with a title and the best-matching line.",
+      "(such as 'net working capital'). Returns up to 5 pages with a title and the best-matching line. Pass `section` to search inside one Item or Note.",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "PDF file path relative to the workspace" },
         query: { type: "string", description: "A few words to look for" },
+        section: { type: "string", description: "Optional: search only inside one section of the outline, such as Item 7 or Note 6" },
       },
       required: ["path", "query"],
       additionalProperties: false,
     },
-    execute: async (_toolCallId, params: { path: string; query: string }, signal) => {
+    execute: async (_toolCallId, params: { path: string; query: string; section?: string }, signal) => {
       if (typeof params.path !== "string" || !/\.pdf$/i.test(params.path)) throw new Error("search works on PDF files");
       const query = typeof params.query === "string" ? params.query.replace(/\s+/g, " ").trim().slice(0, MAX_QUERY_CHARS) : "";
       if (!query) throw new Error("give a few words to search for");
@@ -40,15 +43,42 @@ export function searchTool(docs: DocStore): AgentTool<any> {
         index = buildIndex(doc.pages);
         indexes.set(doc, index);
       }
-      // Instruction sentences and date markers are removed before searching; the echo keeps what the model asked.
-      const hits = index.search(cleanQuery(query), TOP);
-      const head = `[search "${query}" in ${params.path} (${index.pages} pages)]`;
-      if (hits.length === 0) {
-        return { content: [{ type: "text", text: `${head}\nNo page matches. Try other words, such as a row label or a statement name.` }], details: { path: params.path, query, pages: [] } };
+      // A section limits the search to its pages; a name that is not found (or no outline) searches the whole file and says so.
+      // Without `section` the outline is never built.
+      const wanted = typeof params.section === "string" ? params.section.replace(/\s+/g, " ").trim().slice(0, 60) : "";
+      let range: { from: number; to: number } | undefined;
+      let sectionId = "";
+      if (wanted) {
+        let entry: ReturnType<typeof findSection>;
+        try {
+          entry = findSection(build(doc.pages), wanted);
+        } catch {
+          entry = undefined;
+        }
+        if (entry) {
+          range = { from: entry.from, to: entry.to ?? entry.from };
+          sectionId = entry.id;
+        }
       }
-      const lines = hits.map((h) => `page ${h.page}: ${h.title || "(no title)"}\n  ${h.snippet}`);
-      const text = `${head}\n${lines.join("\n")}\n[read a page with read_page(path, page)]`;
-      return { content: [{ type: "text", text }], details: { path: params.path, query, pages: hits.map((h) => h.page) } };
+      // Instruction sentences and date markers are removed before searching; the echo keeps what the model asked.
+      const hits = index.search(cleanQuery(query), TOP, range);
+      const where = !wanted ? "" : range ? `, section ${sectionId} p.${range.from}${range.to > range.from ? "-" + range.to : ""}` : `; section "${wanted.replace(/["\[\]]/g, "")}" not found, whole file searched`;
+      const head = `[search "${query}" in ${params.path} (${index.pages} pages)${where}]`;
+      const base = { path: params.path, query, ...(wanted ? { section: wanted, range: range ?? null, sectionFound: !!range } : {}) };
+      if (hits.length === 0) {
+        return { content: [{ type: "text", text: `${head}\nNo page matches. Try other words, such as a row label or a statement name.` }], details: { ...base, pages: [] } };
+      }
+      const mark = (p: number) => {
+        const s = visits?.state(params.path, p);
+        return s === "opened" ? " (opened)" : s === "passage" ? " (passage read)" : "";
+      };
+      const lines = hits.map((h) => `page ${h.page}${mark(h.page)}: ${h.title || "(no title)"}\n  ${h.snippet}`);
+      const pages = hits.map((h) => h.page);
+      const pending = visits?.pending(params.path, pages) ?? [];
+      visits?.listed(params.path, pages);
+      const earlier = pending.length ? `\n[listed earlier, not opened: ${pending.map((p) => `p.${p}`).join(", ")}]` : "";
+      const text = `${head}\n${lines.join("\n")}${earlier}\n[read a page with read_page(path, page)]`;
+      return { content: [{ type: "text", text }], details: { ...base, pages, opened: pages.filter((p) => visits?.state(params.path, p)), pending } };
     },
   };
 }

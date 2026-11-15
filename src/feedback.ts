@@ -39,10 +39,13 @@ export function toolLine(name: string, args: unknown, n: number, max: number): s
   let what: string;
   switch (name) {
     case "read_page":
-      what = `read page ${oneLine(a.page, 8)}${a.part !== undefined && a.part !== 1 ? ` (part ${oneLine(a.part, 4)})` : ""} of ${file ?? "?"}`;
+      what = `read page ${oneLine(a.page, 8)}${a.part !== undefined && a.part !== 1 ? ` (part ${oneLine(a.part, 4)})` : ""} of ${file ?? "?"}${typeof a.find === "string" && a.find.trim() ? ` (around "${oneLine(a.find, 40)}")` : ""}`;
       break;
     case "search":
-      what = `search "${oneLine(a.query, 50)}"${file ? ` in ${file}` : ""}`;
+      what = `search "${oneLine(a.query, 50)}"${file ? ` in ${file}` : ""}${typeof a.section === "string" && a.section.trim() ? ` (section ${oneLine(a.section, 30)})` : ""}`;
+      break;
+    case "outline":
+      what = `outline of ${file ?? "?"}`;
       break;
     case "list_files":
       what = "list files";
@@ -90,9 +93,19 @@ export function budgetNote(reason: string): string {
 }
 
 /** The dim line shown after a search finishes: the pages it returned, so a wrong pick is visible. Undefined when the result has no page list. */
+/** The dim line under an outline call: how many sections were found. */
+export function outlineResultLine(details: unknown): string | undefined {
+  const d = asRecord(details);
+  if (typeof d.found !== "boolean") return undefined;
+  if (!d.found) return "  → no outline found";
+  const part = (n: unknown, w: string) => (typeof n === "number" && n > 0 ? [`${n} ${w}${n === 1 ? "" : "s"}`] : []);
+  return `  → ${[...part(d.items, "Item"), ...part(d.statements, "statement"), ...part(d.notes, "Note")].join(", ")}`;
+}
+
 export function searchResultLine(details: unknown): string | undefined {
   const pages = asRecord(details).pages;
   if (!Array.isArray(pages)) return undefined;
   const nums = pages.filter((p): p is number => Number.isInteger(p));
-  return nums.length ? `  → ${nums.map((p) => `p.${p}`).join(", ")}` : "  → no page matched";
+  const seen = new Set(Array.isArray(asRecord(details).opened) ? (asRecord(details).opened as unknown[]) : []);
+  return nums.length ? `  → ${nums.map((p) => `p.${p}${seen.has(p) ? " (opened)" : ""}`).join(", ")}` : "  → no page matched";
 }

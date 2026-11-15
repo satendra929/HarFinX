@@ -10,7 +10,7 @@ export interface PageHit {
 
 export interface PageIndex {
   pages: number;
-  search(query: string, k?: number): PageHit[];
+  search(query: string, k?: number, range?: { from: number; to: number }): PageHit[];
 }
 
 // Words that carry no information about where an answer is printed: grammar, question words and instruction verbs.
@@ -99,13 +99,14 @@ export function buildIndex(pageTexts: string[]): PageIndex {
 
   return {
     pages: n,
-    search(query, k = 5) {
+    search(query, k = 5, range) {
       const terms = [...new Set(tokenize(query))];
       if (terms.length === 0) return [];
       const qTokens = tokenize(query);
       const qPairs = [...new Set(qTokens.slice(1).map((t, i) => qTokens[i] + " " + t))];
       const hits: PageHit[] = [];
       docs.forEach((d, i) => {
+        if (range && (i + 1 < range.from || i + 1 > range.to)) return; // outside the section: skipped before the top k is cut
         let score = 0;
         for (const t of terms) {
           const f = d.tf.get(t);

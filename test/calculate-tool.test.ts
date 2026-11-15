@@ -73,9 +73,13 @@ test("help lists definitions without calculating", async () => {
   const tool = calculateTool(new Ledger());
   assert.match((await run(tool, { help: "cagr" })).content[0].text, /\(end \/ begin\) \^ \(1 \/ years\) - 1/);
   assert.match((await run(tool, { help: "growth" })).content[0].text, /pct_change/);
-  const finance = (await run(tool, { help: "finance" })).content[0].text;
-  for (const name of ["gross_margin", "operating_margin", "net_margin", "current_ratio", "working_capital"]) assert.ok(finance.includes(name + "("), name);
-  assert.match((await run(tool, { help: "nonsense" })).content[0].text, /Categories: core, growth, finance/);
+  const profit = (await run(tool, { help: "profit" })).content[0].text;
+  for (const name of ["gross_margin", "operating_margin", "net_margin"]) assert.ok(profit.includes(name + "("), name);
+  const liquidity = (await run(tool, { help: "liquidity" })).content[0].text;
+  for (const name of ["current_ratio", "working_capital", "quick_ratio("]) assert.ok(liquidity.includes(name.replace(/\($/, "") ), name);
+  assert.match((await run(tool, { help: "dso" })).content[0].text, /dso_ending\(.*\n.*dso_average\(/); // a stem lists its variants
+  assert.ok((await run(tool, { help: "efficiency" })).content[0].text.length < 2000);
+  assert.match((await run(tool, { help: "nonsense" })).content[0].text, /Categories: core, growth, profit, liquidity, leverage, efficiency, returns/);
 });
 
 test("finance functions: the answer is traced to the calculator and the definition is returned", async () => {
@@ -102,8 +106,36 @@ test("tool is sequential and its prompt footprint stays small", () => {
     assert.equal(tool.executionMode, "sequential");
     const size = tool.description.length + JSON.stringify(tool.parameters).length;
     assert.ok(size < 2600, `${shape}: ${size} characters`);
-    assert.ok(size < 1950, `${shape}: ${size} characters (the budget with the finance functions; raise it only on purpose)`);
+    assert.ok(size < 2150, `${shape}: ${size} characters (the budget with the finance functions; raise it only on purpose)`);
   }
+});
+
+test("the description lists every single name and the variant stems once", () => {
+  const d = calculateTool(new Ledger()).description;
+  for (const n of ["sum", "gross_margin", "quick_ratio_ex_inventory", "free_cash_flow", "cash_conversion_cycle", "net_debt"]) assert.ok(d.includes(n), n);
+  assert.ok(d.includes("dso, dio, dpo, inventory_turnover, roa, roe, each as NAME_ending or NAME_average"));
+  assert.ok(!d.includes("dso_ending"));
+});
+
+test("second set: bracketed costs give the same value as plain ones; a swap of average balances changes nothing", async () => {
+  const tool = calculateTool(new Ledger());
+  const v = async (inputs: Record<string, string>, expr: string) => /\br = ([-\d,.]+)/.exec((await run(tool, { inputs, steps: [{ name: "r", expr }] })).content[0].text)?.[1];
+  assert.equal(await v({ o: "38,747", c: "(11,323)" }, "free_cash_flow(o, c)"), await v({ o: "38,747", c: "11,323" }, "free_cash_flow(o, c)"));
+  assert.equal(await v({ e: "1,306", i: "(207)" }, "interest_coverage_ebit(e, i)"), await v({ e: "1,306", i: "207" }, "interest_coverage_ebit(e, i)"));
+  assert.equal(await v({ c: "(3,650)", i: "600" }, "dio_ending(c, i)"), "60");
+  assert.equal(await v({ c: "3,650", a: "500", b: "700" }, "dio_average(c, a, b)"), await v({ c: "3,650", a: "700", b: "500" }, "dio_average(c, a, b)"));
+});
+
+test("second set: identities and the near-miss hint", async () => {
+  const tool = calculateTool(new Ledger());
+  const text = (await run(tool, { inputs: { r: "7,300", ar: "1,000", c: "3,650", inv: "600", ap: "450" }, steps: [
+    { name: "d1", expr: "dso_ending(r, ar)" }, { name: "d2", expr: "dio_ending(c, inv)" }, { name: "d3", expr: "dpo_ending(c, ap)" },
+    { name: "ccc", expr: "cash_conversion_cycle(d1, d2, d3)" }, { name: "idn", expr: "inventory_turnover_ending(c, inv) * dio_ending(c, inv)" },
+  ] })).content[0].text;
+  assert.match(text, /ccc = 65/);
+  assert.match(text, /idn = 365/);
+  await assert.rejects(run(tool, { inputs: { a: "1", b: "2" }, steps: [{ name: "x", expr: "dso(a, b)" }] }), /Did you mean dso_ending, dso_average\?/);
+  await assert.rejects(run(tool, { inputs: { a: "1" }, steps: [{ name: "x", expr: "zzz(a)" }] }), (e: Error) => !/Did you mean/.test(e.message));
 });
 
 test("guard: calculate keeps working after the output budget is spent; read_file does not", async () => {
