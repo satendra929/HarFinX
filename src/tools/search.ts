@@ -4,13 +4,15 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { DocStore } from "../documents/store.ts";
 import type { ParsedPdf } from "../documents/pdf.ts";
-import { buildIndex, type PageIndex } from "../documents/search.ts";
+import { buildIndex, tokenize, type PageIndex } from "../documents/search.ts";
 import { cleanQuery } from "../documents/query.ts";
 import type { PageVisits } from "../documents/visits.ts";
 import { findSection, outlineOf, type Outline } from "../documents/outline.ts";
 
 const TOP = 5;
 const MAX_QUERY_CHARS = 200;
+// No digits, as with the guard's text: the model may repeat it.
+const REPEATED = "[this is the same search as an earlier one in this question, so the pages are the same: read one of them, or search for different words, or call outline]";
 
 export function searchTool(docs: DocStore, visits?: PageVisits, build: (pages: readonly string[]) => Outline = outlineOf): AgentTool<any> {
   const indexes = new WeakMap<ParsedPdf, PageIndex>(); // one index per parsed document, built on first search
@@ -61,9 +63,12 @@ export function searchTool(docs: DocStore, visits?: PageVisits, build: (pages: r
         }
       }
       // Instruction sentences and date markers are removed before searching; the echo keeps what the model asked.
-      const hits = index.search(cleanQuery(query), TOP, range);
+      const cleaned = cleanQuery(query);
+      // The same search twice in one question (same words in any order, same section) returns the same pages: the model is told.
+      const repeated = visits?.searchedBefore(params.path, `${wanted.toLowerCase()}|${[...new Set(tokenize(cleaned))].sort().join(" ")}`) ?? false;
+      const hits = index.search(cleaned, TOP, range);
       const where = !wanted ? "" : range ? `, section ${sectionId} p.${range.from}${range.to > range.from ? "-" + range.to : ""}` : `; section "${wanted.replace(/["\[\]]/g, "")}" not found, whole file searched`;
-      const head = `[search "${query}" in ${params.path} (${index.pages} pages)${where}]`;
+      const head = `[search "${query}" in ${params.path} (${index.pages} pages)${where}]${repeated ? "\n" + REPEATED : ""}`;
       const base = { path: params.path, query, ...(wanted ? { section: wanted, range: range ?? null, sectionFound: !!range } : {}) };
       if (hits.length === 0) {
         return { content: [{ type: "text", text: `${head}\nNo page matches. Try other words, such as a row label or a statement name.` }], details: { ...base, pages: [] } };

@@ -8,10 +8,20 @@ export type PageState = "opened" | "passage";
 export class PageVisits {
   private seen = new Map<string, Map<number, PageState>>();
   private offered = new Map<string, number[]>();
+  private searches = new Set<string>();
 
   reset(): void {
     this.seen.clear();
     this.offered.clear();
+    this.searches.clear();
+  }
+
+  /** Notes a search (file plus a normalized form of the query and section); true when this question already ran the same one. */
+  searchedBefore(file: string, normalizedQuery: string): boolean {
+    const key = fileKey(file) + "|" + normalizedQuery;
+    const again = this.searches.has(key);
+    this.searches.add(key);
+    return again;
   }
 
   /** A page (or a part of it) was shown. A passage never downgrades a page already opened. */

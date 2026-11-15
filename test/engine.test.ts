@@ -11,6 +11,7 @@ import { createEngine, type Engine } from "../src/engine.ts";
 import { reasoningProfile } from "../src/reasoning.ts";
 import { loadConfig } from "../src/config.ts";
 import { extractNumbers, normalise } from "../src/provenance.ts";
+import * as D from "./fixtures/docKinds.ts";
 
 const createNum = (s: string) => extractNumbers(normalise(s))[0];
 
@@ -38,7 +39,7 @@ interface Rig {
   text: () => string;
 }
 
-function rig(opts: { failAuditAfter?: number } = {}): Rig {
+function rig(opts: { failAuditAfter?: number; pages?: string[]; statementTool?: boolean } = {}): Rig {
   const faux = fauxProvider();
   const models = createModels({ identity: { attribution: null } });
   models.setProvider(faux.provider);
@@ -63,7 +64,8 @@ function rig(opts: { failAuditAfter?: number } = {}): Rig {
     filesEnabled: true,
     calcShape: "expr",
     context: cfg.context,
-    docs: createDocStore(ws, async (): Promise<ParsedPdf> => ({ pages: [PAGE] })),
+    docs: createDocStore(ws, async (): Promise<ParsedPdf> => ({ pages: opts.pages ?? [PAGE] })),
+    ...(opts.statementTool === undefined ? {} : { statementTool: opts.statementTool }),
     chat: false,
     links: false,
   });
@@ -244,4 +246,28 @@ test("stop() ends an answer in progress as aborted; it does nothing when idle", 
   r.faux.setResponses([(() => { r.engine.stop(); return fauxAssistantMessage("late"); }) as never]);
   await r.engine.ask("hi");
   assert.equal(find(r, "run_end")[0].data.outcome, "aborted");
+});
+
+test("get_line_item: the structured row is traced, referenced and counted like a page read; the prompt tells the model to call it first", async () => {
+  const r = rig({ pages: D.REAL_10K, statementTool: true });
+  r.faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("get_line_item", { path: "a.pdf", concept: "total_assets", period: "2022" }, { id: "g1" })], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Total assets were 5,600 at the end of 2022."),
+  ]);
+  assert.equal(await r.engine.ask("What were total assets at the end of 2022?"), true);
+  assert.deepEqual(r.err, []);
+  assert.match(r.text(), /\[S1\]/); // the figure carries a reference mark
+  assert.equal(find(r, "provenance")[0].data.unverified.length, 0);
+  assert.ok(find(r, "sources")[0].data.entries.length >= 1);
+  const start = find(r, "session_start")[0].data;
+  assert.ok(start.tools.includes("get_line_item"));
+  assert.match(start.systemPrompt, /call get_line_item first/);
+  assert.equal(find(r, "period_units").length, 0);
+});
+
+test("get_line_item: it is off unless asked for: no tool and no prompt sentence", async () => {
+  const r = rig();
+  const start = find(r, "session_start")[0].data;
+  assert.ok(!start.tools.includes("get_line_item"));
+  assert.doesNotMatch(start.systemPrompt, /get_line_item/);
 });

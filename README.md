@@ -69,7 +69,7 @@ Set `PROVIDER=anthropic` and `ANTHROPIC_API_KEY=<a Console API key>` in `.env`. 
 
 ## Layout
 
-`src/` is the harness (`tools/` the tools, `documents/` PDF reading and page search, `calc/` the calculator, `cli.ts` the chat loop); `eval/` is the evaluation harness; `test/` holds the tests.
+`src/` is the harness (`tools/` the tools, `documents/` PDF reading and page search, `calc/` the calculator, `cli.ts` the chat loop, `engine.ts` the work around one question); `eval/` is the evaluation harness; `test/` holds the tests.
 
 ## License
 

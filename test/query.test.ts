@@ -5,7 +5,9 @@ import { cleanQuery } from "../src/documents/query.ts";
 test("instruction sentences after the question are dropped; the question itself always stays", () => {
   assert.equal(cleanQuery("Does AMD have a healthy liquidity profile based on its quick ratio? If the quick ratio is not relevant to measure liquidity, please state that and explain why."), "Does AMD have a healthy liquidity profile based on its quick ratio?");
   assert.equal(cleanQuery("What is the gross margin? Answer in USD millions."), "What is the gross margin?");
-  assert.equal(cleanQuery("Respond to the question by assuming the perspective of an analyst. What is net income?"), "Respond to the question by assuming the perspective of an analyst. What is net income?"); // the first sentence is kept as is
+  assert.equal(cleanQuery("Respond to the question by assuming the perspective of an analyst. What is net income?"), "What is net income?"); // an instruction first sentence goes too
+  assert.equal(cleanQuery("Assume that you are an analyst. Answer the following question using the balance sheet: what is net PPE for ACME? Answer in USD billions."), "what is net PPE for ACME?"); // the question after a colon stays
+  assert.equal(cleanQuery("Answer in USD millions."), "Answer in USD millions."); // nothing but instructions: the original
   assert.equal(cleanQuery("What is net income? Respond using only the income statement. Round to two decimals."), "What is net income?");
 });
 

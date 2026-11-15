@@ -15,6 +15,8 @@ export interface Config {
   auditDir: string;
   allowCloudFiles: boolean;
   calcShape: "steps" | "expr";
+  /** STATEMENT_TOOL=on: add the get_line_item tool and its prompt sentence. Off by default: the first live run (2026-11-15) showed no net gain. */
+  statementTool: boolean;
   /** Override of the provider's reasoning-history policy (src/reasoning.ts); undefined means the profile default. */
   reasoningHistory?: "drop" | "latest" | "keep";
   /** How much of the earlier conversation the model is shown (src/contextSettings.ts). */
@@ -93,6 +95,7 @@ export function loadConfig(overrides: { model?: string } = {}): Config {
     auditDir: env.AUDIT_DIR?.trim() || "audit",
     allowCloudFiles: env.ALLOW_CLOUD_FILES?.trim() === "1",
     calcShape: env.CALC_SHAPE?.trim() === "expr" ? "expr" : "steps",
+    statementTool: env.STATEMENT_TOOL?.trim().toLowerCase() === "on",
     reasoningHistory,
     context: parseContextConfig(env),
     envFileFound,

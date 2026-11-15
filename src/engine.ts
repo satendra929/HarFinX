@@ -28,6 +28,7 @@ import { answerShape } from "./shape.ts";
 import { createDocStore, type DocStore } from "./documents/store.ts";
 import { readPageTool } from "./tools/readPage.ts";
 import { searchTool } from "./tools/search.ts";
+import { lineItemTool } from "./tools/lineItem.ts";
 import { outlineTool } from "./tools/outline.ts";
 import { PageVisits } from "./documents/visits.ts";
 import { listFilesTool } from "./tools/listFiles.ts";
@@ -52,6 +53,11 @@ export const SYSTEM_PROMPT =
   "Give a change or a rate with its direction (an increase or a decrease), taken from the calculator's signed result; if a measure does not apply to this kind of company, say so instead of computing it. When the question asks for several items (all segments, every program), cover each one the page shows. Never do arithmetic yourself: every figure you state that is not copied exactly from a file or from the user's message must come from the calculate tool. " +
   "Copy source numbers exactly as printed into its inputs, let it do all calculations and unit conversions, and quote its shown values exactly. " +
   "If a number you need is not in the file, ask the user for it.";
+
+/** Added to the system prompt when the statement tool is on: the structured lookup first, the search as the fallback. */
+export const STATEMENT_PROMPT =
+  "For a line of the balance sheet, income statement or cash flow statement of a 10-K or 10-Q PDF (total assets, revenue, net income, operating cash flow and similar), call get_line_item first: it returns the row as printed with its columns. If it answers not_found or ambiguous, use search and read_page as usual. ";
+export const systemPromptFor = (statementTool: boolean): string => (statementTool ? SYSTEM_PROMPT.replace("For a PDF (a filing or report), find", STATEMENT_PROMPT + "For a PDF (a filing or report), find") : SYSTEM_PROMPT);
 
 export const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 // Guard lines are yellow. Model text is stripped of escape codes before printing (cleanForTerminal),
@@ -88,6 +94,8 @@ export interface EngineOptions {
   links: boolean;
   /** Asks the model server which window it loaded; checked once per model after the first answer. Undefined: no check. */
   serverContext?: (modelId: string) => Promise<number | undefined>;
+  /** The get_line_item tool and its prompt sentence (default off; STATEMENT_TOOL=on in .env or the environment). */
+  statementTool?: boolean;
   /** Extra fields for the session_start record (harness version, node, provider, workspace, ...). */
   sessionStart?: Record<string, unknown>;
 }
@@ -187,6 +195,7 @@ export function createEngine(opts: EngineOptions): Engine {
           listFilesTool(workspace),
           readFileTool(workspace),
           outlineTool(docs),
+          ...(opts.statementTool === true ? [lineItemTool(docs, visits)] : []),
           searchTool(docs, visits),
           readPageTool(docs, undefined, visits),
         ]
@@ -205,8 +214,9 @@ export function createEngine(opts: EngineOptions): Engine {
     onReport: (r) => record(r.error ? "context_error" : "context_compacted", r as unknown as Record<string, unknown>),
   });
 
+  const systemPrompt = systemPromptFor(opts.statementTool === true && opts.filesEnabled);
   const agent = new Agent({
-    initialState: { systemPrompt: SYSTEM_PROMPT, model, tools },
+    initialState: { systemPrompt, model, tools },
     transformContext: view.transform,
     streamFn: opts.streamFn,
     beforeToolCall: guard.beforeToolCall,
@@ -227,7 +237,7 @@ export function createEngine(opts: EngineOptions): Engine {
     tools: tools.map((t) => t.name),
     limits: DEFAULT_LIMITS,
     context: { mode: contextMode, level: contextNow().level, window: model.contextWindow, knobs: contextNow().knobs, overridden: contextNow().overridden },
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt,
   });
   if (auditError) throw new Error(`Cannot write the audit log (${auditError}). Refusing to start without one.`);
 

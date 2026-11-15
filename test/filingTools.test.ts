@@ -7,6 +7,7 @@ import { openWorkspace, type Workspace } from "../src/workspace.ts";
 import { createDocStore } from "../src/documents/store.ts";
 import type { ParsedPdf } from "../src/documents/pdf.ts";
 import { searchTool } from "../src/tools/search.ts";
+import { PageVisits } from "../src/documents/visits.ts";
 import { humanSize, listFilesTool } from "../src/tools/listFiles.ts";
 import { makePdf } from "./fixtures/makePdf.ts";
 
@@ -105,4 +106,25 @@ test("search: instruction sentences and date markers in the query do not pull in
   const r = await run(tool, { path: "filings/ACME_2022_10K.pdf", query: asked });
   assert.equal(r.details.pages[0], 2);
   assert.ok(r.content[0].text.startsWith(`[search "${asked}" in`)); // the echo keeps what the model asked
+});
+
+test("search: the same search twice in one question is called out; other words, another section or a new question are not", async () => {
+  const visits = new PageVisits();
+  const tool = searchTool(fakeStore(), visits);
+  const path = "filings/ACME_2022_10K.pdf";
+  const first = await run(tool, { path, query: "total current liabilities" });
+  assert.doesNotMatch(first.content[0].text, /same search as an earlier one/);
+  const again = await run(tool, { path, query: "Current liabilities, total" }); // same words, other order and case
+  assert.match(again.content[0].text, /same search as an earlier one in this question/);
+  assert.match(again.content[0].text, /page \d+/); // the results are still returned
+  assert.doesNotMatch(again.content[0].text.match(/same search[^\n]*/)![0], /\d/); // no digits for the model to repeat
+  const other = await run(tool, { path, query: "revenue" });
+  assert.doesNotMatch(other.content[0].text, /same search as an earlier one/);
+  visits.reset(); // a new question
+  const fresh = await run(tool, { path, query: "total current liabilities" });
+  assert.doesNotMatch(fresh.content[0].text, /same search as an earlier one/);
+  // without a visits object (callers outside the engine) nothing changes
+  const bare = searchTool(fakeStore());
+  await run(bare, { path, query: "revenue" });
+  assert.doesNotMatch((await run(bare, { path, query: "revenue" })).content[0].text, /same search as an earlier one/);
 });
