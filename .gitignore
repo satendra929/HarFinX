@@ -11,7 +11,7 @@
 workspace/
 # Audit log: full questions, model output and file contents. Local only.
 audit/
-# Eval: FinanceBench data and gold answers (non-commercial licence) and per-run results/logs. Scripts and RUBRIC stay tracked.
+# Eval: FinanceBench data and gold answers (non-commercial licence) and per-run results/logs. The eval scripts stay tracked.
 eval/data/
 eval/runs/
 eval/scorer-input/

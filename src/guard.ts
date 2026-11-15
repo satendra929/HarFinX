@@ -22,7 +22,7 @@ export interface GuardOptions {
 }
 
 // Sized for an 8k-token window (numbers tokenise at ~2-3 chars/token). The default window is 16k, so these are tighter than
-// they need to be there; scaling them with the window is on the todo list.
+// they need to be there; they do not yet scale with the window.
 export const DEFAULT_LIMITS = { maxCallsPerRun: 8, maxOutputChars: 5_000, maxTotalChars: 12_000 };
 
 // Model-controlled text must not reach the terminal raw (ANSI escapes etc.).
