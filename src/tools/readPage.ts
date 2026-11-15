@@ -8,10 +8,23 @@ import { carriedHeader, findTerms, markUnlabeled, nearestHeader, pageLines, pass
 import type { PageVisits } from "../documents/visits.ts";
 import { printedLabelOf } from "../documents/printed.ts";
 import type { SourceMeta } from "../provenance.ts";
+import { shownContent, type ShownText } from "../shown.ts";
+
+/** The optional callback is a convenience for callers without an engine; a failing callback never changes the result. */
+function handOver(shown: readonly ShownText[], onShown?: (label: string, text: string, meta: SourceMeta) => void): void {
+  for (const s of shown) {
+    try {
+      onShown?.(s.label, s.text, s.meta);
+    } catch {
+      /* a failed record never changes what the model gets */
+    }
+  }
+}
 
 /**
- * `onShown` receives exactly the page text the model has now seen (used to build the figure-provenance ledger), and
- * where it sits: the file, the page, every line of the page and the index of this part's first line in them.
+ * The result's `structuredContent` holds exactly the page text the model has now seen, and where it sits: the file, the
+ * page, every line of the page and the index of this part's first line in them (the engine feeds the figure-provenance
+ * ledger from it; Pi never sends it to the model). `onShown` gets the same, for callers that run the tool without an engine.
  */
 export function readPageTool(docs: DocStore, onShown?: (label: string, text: string, meta: SourceMeta) => void, visits?: PageVisits): AgentTool<any> {
   return {
@@ -59,13 +72,13 @@ export function readPageTool(docs: DocStore, onShown?: (label: string, text: str
         const shownLines = new Set(windows.flatMap(([a, b]) => lines.slice(a, b + 1)));
         const header = nearestHeader(lines, windows[0][0]);
         const carried = [header.units, header.period, header.columns].filter((l, i, all): l is string => l !== undefined && !shownLines.has(l) && all.indexOf(l) === i);
+        let shownTexts: ShownText[] = [];
         try {
-          for (const [a, b] of windows) {
-            onShown?.(`${params.path} p.${params.page}`, lines.slice(a, b + 1).join("\n"), { file: params.path, page: params.page, pageLines: lines, lineOffset: a, printed: printedLabelOf(doc.pages, params.page) });
-          }
+          shownTexts = windows.map(([a, b]) => ({ label: `${params.path} p.${params.page}`, text: lines.slice(a, b + 1).join("\n"), meta: { file: params.path, page: params.page, pageLines: lines, lineOffset: a, printed: printedLabelOf(doc.pages, params.page) } }));
         } catch {
-          /* a failed record never changes what the model gets */
+          /* a failed record only loses the record, never the read */
         }
+        handOver(shownTexts, onShown);
         visits?.opened(params.path, params.page, "passage");
         let out = `[page ${params.page} of ${total} in ${params.path}: lines around "${echo}"]\n`;
         if (carried.length) out += `[repeated from above on the page]\n${carried.join("\n")}\n`;
@@ -73,7 +86,7 @@ export function readPageTool(docs: DocStore, onShown?: (label: string, text: str
         out += windows.map(([a, b]) => shown.slice(a, b + 1).join("\n")).join("\n[...]\n") + "\n";
         const whole = windows.length === 1 && windows[0][0] === 0 && windows[0][1] === lines.length - 1;
         out += whole ? `[end of page ${params.page}]` : more ? `[page ${params.page}: more matching lines follow; call read_page without find for the whole page]` : `[page ${params.page}: part of the page is shown; call read_page without find for the whole page]`;
-        return { content: [{ type: "text", text: out }], details: { path: params.path, page: params.page, pages: total, find: echo, windows, matched: true, moreWindows: more } };
+        return { content: [{ type: "text", text: out }], details: { path: params.path, page: params.page, pages: total, find: echo, windows, matched: true, moreWindows: more }, structuredContent: shownContent(shownTexts) };
       }
       if (parts.length === 0) {
         return { content: [{ type: "text", text: `${head}\n[this page has no text: it may be blank or an image]` }], details: { path: params.path, page: params.page, parts: 0, pages: total } };
@@ -82,13 +95,15 @@ export function readPageTool(docs: DocStore, onShown?: (label: string, text: str
 
       const body = parts[part - 1];
       visits?.opened(params.path, params.page);
-      // Telling the ledger what was shown (and where) must never change what the model gets: a failure here only loses the record.
+      // What was shown (and where) goes to the host as structured content; building it must never change what the model gets.
+      let shownTexts: ShownText[] = [];
       try {
         const lineOffset = parts.slice(0, part - 1).reduce((n, p) => n + p.split("\n").length, 0);
-        onShown?.(`${params.path} p.${params.page}`, body, { file: params.path, page: params.page, pageLines: pageLines(text), lineOffset, printed: printedLabelOf(doc.pages, params.page) });
+        shownTexts = [{ label: `${params.path} p.${params.page}`, text: body, meta: { file: params.path, page: params.page, pageLines: pageLines(text), lineOffset, printed: printedLabelOf(doc.pages, params.page) } }];
       } catch {
-        /* see above */
+        /* a failed record only loses the record */
       }
+      handOver(shownTexts, onShown);
       let out = head + "\n";
       if (part > 1) {
         const carried = carriedHeader(text.split("\n"));
@@ -99,7 +114,7 @@ export function readPageTool(docs: DocStore, onShown?: (label: string, text: str
       const waiting = visits?.pending(params.path, [params.page]) ?? [];
       if (waiting.length) out += `[listed by search, not opened: ${waiting.map((p) => `p.${p}`).join(", ")}]\n`;
       out += part < parts.length ? `[page ${params.page}, part ${part} of ${parts.length}; call read_page again with part=${part + 1} for the rest]` : `[end of page ${params.page}${parts.length > 1 ? `, part ${part} of ${parts.length}` : ""}]`;
-      return { content: [{ type: "text", text: out }], details: { path: params.path, page: params.page, part, parts: parts.length, pages: total } };
+      return { content: [{ type: "text", text: out }], details: { path: params.path, page: params.page, part, parts: parts.length, pages: total }, structuredContent: shownContent(shownTexts) };
     },
   };
 }

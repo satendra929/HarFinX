@@ -1,0 +1,247 @@
+import { test, before, after } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+import { openWorkspace, type Workspace } from "../src/workspace.ts";
+import { createDocStore } from "../src/documents/store.ts";
+import type { ParsedPdf } from "../src/documents/pdf.ts";
+import { createEngine, type Engine } from "../src/engine.ts";
+import { reasoningProfile } from "../src/reasoning.ts";
+import { loadConfig } from "../src/config.ts";
+import { extractNumbers, normalise } from "../src/provenance.ts";
+
+const createNum = (s: string) => extractNumbers(normalise(s))[0];
+
+// Whole questions through the real engine (real Pi agent, tools, guard, ledger, checks, references, audit records) with a
+// scripted model: no Ollama, no network.
+const PAGE = ["Consolidated Statements of Income", "(in millions)", "Year ended December 31  |  2022  |  2021", "Net sales  |  32,765  |  31,009", "Net income  |  5,921  |  5,100"].join("\n");
+
+let base: string;
+let ws: Workspace;
+before(() => {
+  base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "finh-engine-")));
+  fs.mkdirSync(path.join(base, "ws"), { recursive: true });
+  fs.mkdirSync(path.join(base, "project"));
+  fs.writeFileSync(path.join(base, "ws", "a.pdf"), "fake");
+  ws = openWorkspace(path.join(base, "ws"), path.join(base, "project"), []);
+});
+after(() => fs.rmSync(base, { recursive: true, force: true }));
+
+interface Rig {
+  engine: Engine;
+  faux: ReturnType<typeof fauxProvider>;
+  audit: { type: string; data: Record<string, any> }[];
+  out: string[];
+  err: string[];
+  text: () => string;
+}
+
+function rig(opts: { failAuditAfter?: number } = {}): Rig {
+  const faux = fauxProvider();
+  const models = createModels({ identity: { attribution: null } });
+  models.setProvider(faux.provider);
+  const audit: Rig["audit"] = [];
+  const out: string[] = [];
+  const err: string[] = [];
+  const cfg = loadConfig({});
+  const engine = createEngine({
+    io: { write: (t) => void out.push(t), log: (l) => void out.push(l + "\n"), error: (l) => void err.push(l) },
+    provider: "ollama",
+    model: faux.getModel(),
+    modelId: "fake",
+    reasoning: reasoningProfile("ollama", undefined, "fake"),
+    streamFn: (m, c, o) => models.streamSimple(m, c, o),
+    workspace: ws,
+    audit: {
+      write(type, data) {
+        if (opts.failAuditAfter !== undefined && audit.length >= opts.failAuditAfter) throw new Error("disk full");
+        audit.push({ type, data: (data ?? {}) as Record<string, any> });
+      },
+    },
+    filesEnabled: true,
+    calcShape: "expr",
+    context: cfg.context,
+    docs: createDocStore(ws, async (): Promise<ParsedPdf> => ({ pages: [PAGE] })),
+    chat: false,
+    links: false,
+  });
+  return { engine, faux, audit, out, err, text: () => out.join("") };
+}
+const types = (r: Rig) => r.audit.map((a) => a.type);
+const find = (r: Rig, type: string) => r.audit.filter((a) => a.type === type);
+const read = fauxToolCall("read_page", { path: "a.pdf", page: 1 }, { id: "t1" });
+
+test("a read, a calculation and an answer: marks, references, checks and the audit trail", async () => {
+  const r = rig();
+  r.faux.setResponses([
+    fauxAssistantMessage([read], { stopReason: "toolUse" }),
+    fauxAssistantMessage([fauxToolCall("calculate", { inputs: { a: "32,765", b: "31,009" }, expr: "(a - b) / b", dp: 1, pct: true }, { id: "t2" })], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Net sales were 32,765 in 2022, up 5.7%."),
+  ]);
+  const ok = await r.engine.ask("What were net sales in 2022, and the change from 2021?");
+  assert.equal(ok, true);
+  assert.deepEqual(r.err, []);
+  assert.match(r.text(), /read page 1 of a.pdf/); // the dim tool-call line
+  assert.match(r.text(), /Net sales were 32,765/);
+  assert.match(r.text(), /\[S1\]/); // the figure read from the page carries a reference mark
+  const t = types(r);
+  assert.equal(t[0], "session_start");
+  for (const want of ["run_start", "tool_start", "tool_end", "message", "answer_shape", "provenance", "sources", "run_end"]) assert.ok(t.includes(want), `missing ${want}`);
+  assert.equal(find(r, "tool_start").length, 2);
+  assert.equal(find(r, "run_end")[0].data.outcome, "ok");
+  assert.equal(find(r, "provenance")[0].data.unverified.length, 0);
+  assert.ok(find(r, "sources")[0].data.entries.length >= 1);
+  assert.equal(find(r, "period_units").length, 0); // the named year is the column the figure sits under
+});
+
+test("an untraced figure is reported by the live check and the audit record", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 99,999.")]);
+  assert.equal(await r.engine.ask("What were net sales in 2022?"), true);
+  assert.match(r.text(), /\[check\] 1 figure not traced/);
+  assert.equal(find(r, "provenance")[0].data.unverified.length, 1);
+});
+
+test("a figure printed under another year than the question names is logged, never shown", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 31,009.")]);
+  await r.engine.ask("What were net sales in 2022?");
+  const found = find(r, "period_units")[0]?.data.findings;
+  assert.equal(found?.length, 1);
+  assert.match(found[0].detail, /31,009 is printed under the 2021 column; the question names 2022/);
+  assert.doesNotMatch(r.text(), /printed under the 2021 column/);
+});
+
+test("a reply with no answer is retried once, then the answer is shown", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([]), fauxAssistantMessage("Hello there.")]);
+  assert.equal(await r.engine.ask("hi"), true);
+  assert.equal(find(r, "repair").length, 1);
+  assert.match(r.text(), /\[repair\] the model returned an empty reply/);
+  assert.match(r.text(), /Hello there\./);
+  assert.equal(r.faux.state.callCount, 2);
+});
+
+test("a reply with no answer twice ends with a note, not a loop", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([]), fauxAssistantMessage([])]);
+  await r.engine.ask("hi");
+  assert.equal(find(r, "repair_failed").length, 1);
+  assert.equal(r.faux.state.callCount, 2); // one retry only
+  assert.match(r.text(), /the model returned no answer/);
+});
+
+test("a model that never stops calling tools is stopped by the guard", async () => {
+  const r = rig();
+  const call = (i: number) => fauxAssistantMessage([fauxToolCall("list_files", { path: "." }, { id: `c${i}` })], { stopReason: "toolUse" });
+  r.faux.setResponses(Array.from({ length: 40 }, (_, i) => call(i)));
+  const ok = await r.engine.ask("list everything forever");
+  assert.equal(ok, false);
+  assert.equal(find(r, "run_end")[0].data.outcome, "guard_tripped");
+  assert.ok(find(r, "guard").length >= 1);
+  assert.ok(r.err.join("\n").length > 0);
+  assert.ok(r.faux.state.callCount < 40);
+});
+
+test("a model error is reported once and the question ends in error", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "model exploded" })]);
+  assert.equal(await r.engine.ask("hi"), false);
+  assert.equal(find(r, "run_end")[0].data.outcome, "error");
+  assert.match(r.err.join("\n"), /Error:/);
+});
+
+test("the audit log fails closed: after a write error nothing more runs", async () => {
+  const r = rig({ failAuditAfter: 3 });
+  r.faux.setResponses([fauxAssistantMessage("fine"), fauxAssistantMessage("never asked")]);
+  assert.equal(await r.engine.ask("hi"), false);
+  assert.match(r.engine.auditError() ?? "", /disk full/);
+  assert.match(r.err.join("\n"), /Audit log write failed/);
+  assert.equal(r.faux.state.callCount, 1); // the second reply was never requested
+});
+
+test("/new clears the ledger, /context shows or changes the level, /model switch is recorded", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 32,765.")]);
+  await r.engine.ask("What were net sales in 2022?");
+  assert.ok(r.engine.ledger.findAll(createNum("32,765")).length > 0);
+  r.engine.newConversation();
+  assert.equal(r.engine.ledger.findAll(createNum("32,765")).length, 0);
+  assert.deepEqual(r.engine.agent.state.messages.filter((m: any) => m.role !== "system"), []);
+  assert.ok(types(r).includes("session_reset"));
+
+  r.out.length = 0;
+  r.engine.contextCommand("strict");
+  assert.equal(find(r, "context_level")[0].data.to, "strict");
+  r.engine.contextCommand("nonsense");
+  assert.match(r.text(), /Unknown level/);
+
+  r.engine.useModel(r.faux.getModel(), "other", reasoningProfile("ollama", undefined, "other"));
+  assert.equal(find(r, "model_switch")[0].data.to, "other");
+});
+
+
+test("the structured content of a read reaches the host but never the model", async () => {
+  const r = rig();
+  let seen = "";
+  let host: any;
+  r.engine.agent.subscribe((e) => {
+    if (e.type === "tool_execution_end") host = e.result.structuredContent;
+  });
+  r.faux.setResponses([
+    fauxAssistantMessage([read], { stopReason: "toolUse" }),
+    (context) => {
+      seen = JSON.stringify(context.messages);
+      return fauxAssistantMessage("Net sales were 32,765.");
+    },
+  ]);
+  await r.engine.ask("What were net sales in 2022?");
+  assert.match(seen, /Net sales/); // the page text is there
+  assert.doesNotMatch(seen, /pageLines|structuredContent|lineOffset/); // the host's side data is not
+  assert.equal(host.shown[0].meta.page, 1); // the host did get it
+});
+
+test("a guard cut of a long result keeps the structured content", async () => {
+  const { createGuard } = await import("../src/guard.ts");
+  const guard = createGuard({ maxCallsPerRun: 8, maxOutputChars: 10, maxTotalChars: 1000, log: () => {} });
+  const structured = { shown: [{ label: "x", text: "y", meta: { file: "x" } }] };
+  const after = await guard.afterToolCall({ toolCall: { name: "read_page" }, result: { content: [{ type: "text", text: "z".repeat(50) }], details: {}, structuredContent: structured } } as never);
+  assert.match((after?.content?.[0] as { text: string }).text, /output truncated/);
+  assert.deepEqual(after?.structuredContent, structured);
+});
+
+test("a read and a calculation in one reply: the ledger is fed before the calculation is checked", async () => {
+  const r = rig();
+  let calcText = "";
+  r.faux.setResponses([
+    fauxAssistantMessage([read, fauxToolCall("calculate", { inputs: { a: "32,765", b: "31,009" }, expr: "(a - b) / b", dp: 1, pct: true }, { id: "t2" })], { stopReason: "toolUse" }),
+    (context) => {
+      calcText = JSON.stringify(context.messages.filter((m: any) => m.role === "toolResult" && m.toolName === "calculate"));
+      return fauxAssistantMessage("Net sales rose 5.7%.");
+    },
+  ]);
+  await r.engine.ask("What was the change in net sales from 2021 to 2022?");
+  assert.match(calcText, /5\.7%/);
+  assert.doesNotMatch(calcText, /not found in the file text/);
+});
+
+test("a read of the whole page and of a passage both feed the ledger (read_file too)", async () => {
+  fs.writeFileSync(path.join(base, "ws", "n.txt"), "Revenue was 777 in the year.");
+  const r = rig();
+  r.faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("read_page", { path: "a.pdf", page: 1, find: "net income" }, { id: "p" }), fauxToolCall("read_file", { path: "n.txt" }, { id: "f" })], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Net income was 5,921 and revenue 777."),
+  ]);
+  await r.engine.ask("net income and revenue?");
+  assert.equal(find(r, "provenance")[0].data.unverified.length, 0);
+});
+
+test("stop() ends an answer in progress as aborted; it does nothing when idle", async () => {
+  const r = rig();
+  assert.equal(r.engine.stop(), false);
+  r.faux.setResponses([(() => { r.engine.stop(); return fauxAssistantMessage("late"); }) as never]);
+  await r.engine.ask("hi");
+  assert.equal(find(r, "run_end")[0].data.outcome, "aborted");
+});

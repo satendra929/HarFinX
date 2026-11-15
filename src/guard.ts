@@ -166,7 +166,8 @@ export function createGuard(opts: GuardOptions) {
         if (!opts.budgetExempt?.includes(ctx.toolCall?.name)) totalChars += text.length;
         return { ...part, text };
       });
-      return truncated ? { content } : undefined;
+      // Replacing the content would drop the structured content (Pi assumes it no longer matches), so it is passed along. It describes the uncut text, as the ledger always has.
+      return truncated ? { content, ...(ctx.result.structuredContent !== undefined ? { structuredContent: ctx.result.structuredContent } : {}) } : undefined;
     },
   };
 }

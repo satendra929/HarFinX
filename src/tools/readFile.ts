@@ -2,6 +2,7 @@
 // All path checks live in Workspace.readText; this file never touches node:fs or builds paths.
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Workspace } from "../workspace.ts";
+import { shownContent } from "../shown.ts";
 
 // Must stay below the guard's per-result cap (maxOutputChars) so the "more available" note is not cut off.
 export const CHUNK_CHARS = 4000;
@@ -21,7 +22,7 @@ export function shownSlice(text: string, offset: number, end: number): string {
   return text.slice(from, to);
 }
 
-/** `onShown` receives the file text the model has now seen (used to build the figure-provenance ledger). */
+/** The result's `structuredContent` holds the file text the model has now seen (the engine builds the figure-provenance ledger from it); `onShown` gets the same for callers without an engine. */
 export function readFileTool(workspace: Workspace, onShown?: (path: string, text: string) => void): AgentTool<any> {
   return {
     name: "read_file",
@@ -50,8 +51,9 @@ export function readFileTool(workspace: Workspace, onShown?: (path: string, text
         return { content: [{ type: "text", text: `[offset ${offset} is past the end of the file (${text.length} characters)]` }], details: {} };
       }
       const end = Math.min(offset + CHUNK_CHARS, text.length);
+      const seen = shownSlice(text, offset, end);
       try {
-        onShown?.(params.path, shownSlice(text, offset, end)); // a failure here only loses the record, never the read
+        onShown?.(params.path, seen); // a failure here only loses the record, never the read
       } catch {
         /* see above */
       }
@@ -60,7 +62,7 @@ export function readFileTool(workspace: Workspace, onShown?: (path: string, text
         end < text.length
           ? `\n[characters ${offset}-${end} of ${text.length}; call read_file again with offset=${end} for more]`
           : `\n[end of file: characters ${offset}-${end} of ${text.length}]`;
-      return { content: [{ type: "text", text: out }], details: { path: params.path, offset, end, total: text.length } };
+      return { content: [{ type: "text", text: out }], details: { path: params.path, offset, end, total: text.length }, structuredContent: shownContent([{ label: params.path, text: seen, meta: { file: params.path } }]) };
     },
   };
 }
