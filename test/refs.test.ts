@@ -91,10 +91,8 @@ test("LineMarker: whole lines come out marked, the unfinished tail waits, a figu
   const l = ledger();
   const lm = new LineMarker((line) => markLine(line, l, new RefNumbers(), mark), (t) => `(${t})`);
   assert.equal(lm.push("Inventories were $5,8"), "");
-  assert.ok(lm.waiting);
   assert.equal(lm.push("18 million.\nSales were 46"), "Inventories were $5,818 million<[S1]>.\n");
   assert.equal(lm.flush(true), "Sales were 46"); // 46 alone is not in the ledger: no mark
-  assert.ok(!lm.waiting);
   lm.push("tail 5,818");
   assert.equal(lm.flush(false), "(tail 5,818)"); // text that was cut off is shown as it is, never marked
   assert.equal(lm.flush(true), "");
@@ -113,7 +111,7 @@ test("the list holds exactly the numbered places, in their numbers; the marks an
   const refs = new RefNumbers();
   assert.equal(markLine(answer, l, refs, mark), "Sales were 46,298<[S1]> and inventories 5,818<[S2]>.");
   const tokens = checkText(answer, l).map((c) => c.token);
-  const list = buildSources(tokens, [], l, undefined, refs.order);
+  const list = buildSources(tokens, [], l, refs.order);
   assert.deepEqual(list.entries.map((e) => [e.ref, e.page]), [[1, 2], [2, 1]]); // the page of sales first
   const lines = formatSources(list);
   assert.ok(lines.some((x) => x.startsWith("  [S1]  filings/a.pdf  p.2")));
@@ -125,7 +123,7 @@ test("a place without a number is not listed; the list never holds a number the 
   const answer = "5,818 then 46,298.";
   const refs = new RefNumbers(1);
   markLine(answer, l, refs, mark);
-  const list = buildSources(checkText(answer, l).map((c) => c.token), [], l, undefined, refs.order);
+  const list = buildSources(checkText(answer, l).map((c) => c.token), [], l, refs.order);
   assert.deepEqual(list.entries.map((e) => [e.ref, e.page]), [[1, 1]]);
 });
 
@@ -135,14 +133,8 @@ test("a calculator input read from another page is listed after the numbered pla
   const refs = new RefNumbers();
   markLine(answer, l, refs, mark);
   const inputs = checkText("46,298", l).map((c) => c.token); // the model gave 46,298 to the calculator
-  const list = buildSources(checkText(answer, l).map((c) => c.token), inputs, l, undefined, refs.order);
+  const list = buildSources(checkText(answer, l).map((c) => c.token), inputs, l, refs.order);
   assert.deepEqual(list.entries.map((e) => [e.ref, e.page, e.rows[0].figures[0].calcInput === true]), [[1, 1, false], [2, 2, true]]);
-});
-
-test("without numbers from the answer the list is numbered from 1 in its own order (current question first)", () => {
-  const l = ledger();
-  const list = buildSources(checkText("5,818 and 46,298", l).map((c) => c.token), [], l);
-  assert.deepEqual(list.entries.map((e) => e.ref), [1, 2]);
 });
 
 test("a company name such as 3M is not a figure for the marks or the list; an amount with a currency sign, decimals or a spaced scale word still is", () => {
@@ -152,7 +144,7 @@ test("a company name such as 3M is not a figure for the marks or the list; an am
   assert.equal(markLine("3M earned 5,349.", l, refs, mark), "3M earned 5,349<[S1]>.");
   assert.equal(markLine("Cost was $3M.", l, refs, mark), "Cost was $3M<[S1]>.");
   assert.equal(markLine("Or 3.5M, or 3 million.", l, refs, mark), "Or 3.5M<[S1]>, or 3 million<[S1]>.");
-  const list = buildSources(checkText("3M earned 5,349.", l).map((c) => c.token), [], l, undefined, refs.order);
+  const list = buildSources(checkText("3M earned 5,349.", l).map((c) => c.token), [], l, refs.order);
   assert.ok(list.entries.every((e) => e.rows.every((r) => r.figures.every((f) => f.raw !== "3M"))));
 });
 

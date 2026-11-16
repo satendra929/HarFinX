@@ -23,6 +23,7 @@ import { recoverReply } from "./recover.ts";
 import type { ReasoningProfile } from "./reasoning.ts";
 import { REPLY_CHARS_PER_CAP_TOKEN, guardRunaway } from "./runaway.ts";
 import { friendlyError } from "./errors.ts";
+import { createPrinter } from "./printer.ts";
 import { answerTextSince, checkLine, summarizeCheck } from "./check.ts";
 import { answerShape } from "./shape.ts";
 import { createDocStore, type DocStore } from "./documents/store.ts";
@@ -69,13 +70,12 @@ export const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const guardLine = (s: string) => `\x1b[33m[guard] ${s}\x1b[0m`;
 const warnLine = (s: string) => `\x1b[33m${s}\x1b[0m`; // yellow, like guard lines: model text cannot produce it
 
-/** Where the engine's output goes: write = raw text, log = a line, error = a line for stderr. */
+/** Where the engine's output goes: write = raw text for stdout (through the printer), error = a line for stderr. */
 export interface EngineIO {
   write(text: string): void;
-  log(line: string): void;
   error(line: string): void;
 }
-const consoleIO: EngineIO = { write: (t) => void process.stdout.write(t), log: (l) => console.log(l), error: (l) => console.error(l) };
+const consoleIO: EngineIO = { write: (t) => void process.stdout.write(t), error: (l) => console.error(l) };
 
 export interface EngineOptions {
   io?: EngineIO;
@@ -154,26 +154,13 @@ export function createEngine(opts: EngineOptions): Engine {
     return pathToFileURL(abs).href + (page !== undefined ? `#page=${page}` : "");
   }
 
-  // Progress lines (tool calls, guard actions) start on a fresh line even when answer text is still streaming.
-  let lineOpen = false;
-  function println(line: string): void {
-    showText(lines.flush(false)); // answer text cut off by a progress line: shown as it is
-    if (lineOpen) {
-      io.write("\n");
-      lineOpen = false;
-    }
-    io.log(line);
-  }
-  /** Answer text for the terminal (already safe, and marked when it is whole lines). */
-  function showText(text: string): void {
-    if (!text) return;
-    io.write(text);
-    lineOpen = !text.endsWith("\n");
-  }
+  // Everything printed goes through one printer: lines start on a fresh line even when answer text is still streaming
+  // (the text cut off by a line is shown as it is), and a note gets one blank line above it.
+  const out = createPrinter(io, () => lines.flush(false));
 
   const guard = createGuard({
     ...DEFAULT_LIMITS,
-    log: (line) => println(guardLine(line)),
+    log: (line) => out.line(guardLine(line)),
     onEvent: (ev) => record("guard", ev),
     budgetExempt: ["calculate"], // small, pure output; must keep working after several file chunks
   });
@@ -274,14 +261,14 @@ export function createEngine(opts: EngineOptions): Engine {
       firstToken = undefined;
     } else if (e.type === "message_update" && firstToken === undefined && e.assistantMessageEvent.type !== "start") firstToken = performance.now(); // "start" is the stream opening, not a token
     // The end of a reply: its last line is whole now (a cut-off reply shows its tail as it is). First, so nothing printed below lands in the middle of the text.
-    if (e.type === "message_end" && e.message.role === "assistant") showText(lines.flush(e.message.stopReason !== "aborted" && e.message.stopReason !== "error"));
+    if (e.type === "message_end" && e.message.role === "assistant") out.text(lines.flush(e.message.stopReason !== "aborted" && e.message.stopReason !== "error"));
     if (e.type === "message_end" && e.message.role !== "user") record("message", e.message.role === "assistant" ? { message: e.message, timing: replyTiming(e.message.content as any) } : { message: e.message }); // user text is in run_start
     if (e.type === "message_end" && e.message.role === "assistant" && !contextWarned) {
       const w = contextWarning(e.message.usage, agent.state.model.contextWindow);
       if (w) {
         contextWarned = true;
         record("context_warning", { used: w.used, window: w.window });
-        io.log(dim(`\n${w.text}`));
+        out.note(dim(w.text));
       }
     }
     // What a reading tool showed the model goes to the ledger, from the result's structured content. Before the next tool runs (calculate is sequential).
@@ -292,13 +279,13 @@ export function createEngine(opts: EngineOptions): Engine {
     }
 
     if (e.type === "tool_execution_start") {
-      if (!guard.tripped) println(dim(toolLine(e.toolName, e.args, guard.calls, DEFAULT_LIMITS.maxCallsPerRun)));
+      if (!guard.tripped) out.line(dim(toolLine(e.toolName, e.args, guard.calls, DEFAULT_LIMITS.maxCallsPerRun)));
       return;
     }
     if (e.type === "tool_execution_end") {
       // After a search: the pages it returned, so a wrong pick is visible.
       const line = e.isError ? undefined : e.toolName === "search" ? searchResultLine(e.result?.details) : e.toolName === "outline" ? outlineResultLine(e.result?.details) : undefined;
-      if (line) println(dim(line));
+      if (line) out.line(dim(line));
       // The printed numbers the model gave the calculator: the Sources block shows where they come from.
       if (e.toolName === "calculate" && !e.isError && Array.isArray(e.result?.details?.inputs)) {
         for (const i of e.result.details.inputs) if (typeof i?.literal === "string") calcInputs.push(i.literal);
@@ -307,30 +294,23 @@ export function createEngine(opts: EngineOptions): Engine {
     }
     if (e.type !== "message_update") return;
     const ev = e.assistantMessageEvent;
-    if (ev.type === "thinking_start") {
-      showText(lines.flush(false));
-      io.write(dim("thinking…\n"));
-      lineOpen = false;
-    } else if (ev.type === "text_delta") {
-      showText(lines.push(ev.delta));
-    }
+    if (ev.type === "thinking_start") out.line(dim("thinking…"));
+    else if (ev.type === "text_delta") out.text(lines.push(ev.delta));
   });
 
   // A single reply that loops (dozens of tool calls, the same call over and over, or text/reasoning far beyond the
   // model's output cap when the server does not enforce it) is cut off while it streams, before anything runs.
   // ask() then retries once with thinking off (src/runaway.ts).
   let runawayReason: string | undefined;
-  const maxReplyChars = model.maxTokens > 0 ? model.maxTokens * REPLY_CHARS_PER_CAP_TOKEN : Infinity;
   guardRunaway(
     agent,
     DEFAULT_LIMITS.maxCallsPerRun,
     (reason) => {
       runawayReason = reason;
       record("runaway", { reason });
-      showText(lines.flush(false)); // the text that looped is shown before the stop line
-      io.log(dim(`\n[stopped] ${reason}`));
+      out.note(dim(`[stopped] ${reason}`)); // the text that looped is shown before the stop line
     },
-    maxReplyChars,
+    () => (model.maxTokens > 0 ? model.maxTokens * REPLY_CHARS_PER_CAP_TOKEN : Infinity), // the current model's cap: /model changes it
   );
 
   // Sends one prompt, streams the reply, reports errors (prompt() does not throw on model errors).
@@ -340,7 +320,7 @@ export function createEngine(opts: EngineOptions): Engine {
     refs.reset();
     visits.reset();
     lines.flush(false); // nothing is left over from an earlier question
-    lineOpen = false;
+    out.begin();
     calcInputs = [];
     contextWarned = false;
     userAborted = false;
@@ -374,19 +354,17 @@ export function createEngine(opts: EngineOptions): Engine {
       },
       canSwitchThinkingOff: !!reasoning.thinkingOff,
       record,
-      say: (line) => io.log(dim(`\n${line}`)),
-      showReasoning: (t) => io.log(cleanForTerminal(t)),
+      say: (line) => out.note(dim(line)),
+      showReasoning: (t) => out.line(cleanForTerminal(t)),
       noAnswerHint: () => emptyAnswerHint(guard.calls, DEFAULT_LIMITS.maxCallsPerRun),
     });
-    showText(lines.flush(false)); // a reply that ended without its last event (a failed stream): its text is shown as it is
-    io.write("\n");
-    lineOpen = false;
+    out.end(); // a reply that ended without its last event (a failed stream): its text is shown as it is
     // The lines under an answer (check, sources, notes, meter) start after one blank line.
     let footerOpen = false;
     const foot = (line: string): void => {
-      if (!footerOpen) io.log("");
+      if (footerOpen) out.line(line);
+      else out.note(line);
       footerOpen = true;
-      io.log(line);
     };
 
     // Once per model: ask the model server which window it really loaded. If it differs from the assumed one, warn
@@ -398,7 +376,7 @@ export function createEngine(opts: EngineOptions): Engine {
       if (warning && actual !== undefined) {
         record("context_mismatch", { assumed: agent.state.model.contextWindow, actual });
         agent.state.model = { ...agent.state.model, contextWindow: actual };
-        io.log(warnLine(warning));
+        out.note(warnLine(warning));
       }
     }
 
@@ -432,7 +410,7 @@ export function createEngine(opts: EngineOptions): Engine {
         try {
           const inputs = calcInputs.flatMap((lit) => extractNumbers(normalise(lit)));
           // The figures are the ones the marks were made from (refs.seen), so the list and the marks cannot disagree.
-          const sources = buildSources(refs.seen, inputs, ledger, DEFAULT_SOURCE_LIMITS, refs.order);
+          const sources = buildSources(refs.seen, inputs, ledger, refs.order);
           const listLines = formatSources(sources, { link: opts.links ? pageLink : undefined });
           if (listLines.length) {
             record("sources", { marked: refs.order.length, entries: sourcesForAudit(sources), notListed: sources.many.length, moreEntries: sources.moreEntries });
@@ -505,7 +483,7 @@ export function createEngine(opts: EngineOptions): Engine {
     if (arg) {
       const next = arg.toLowerCase();
       if (!CONTEXT_MODES.includes(next as ContextMode)) {
-        io.log(dim(`Unknown level "${oneLine(arg, 20)}". Use one of: ${CONTEXT_MODES.join(", ")}.`));
+        out.line(dim(`Unknown level "${oneLine(arg, 20)}". Use one of: ${CONTEXT_MODES.join(", ")}.`));
         return;
       }
       const from = contextMode;
@@ -515,7 +493,7 @@ export function createEngine(opts: EngineOptions): Engine {
       record("context_level", { from, to: contextMode, level: contextNow().level });
     }
     const lastUsage = ([...agent.state.messages] as any[]).reverse().find((m) => m?.role === "assistant" && m.usage)?.usage;
-    for (const l of describeContext(contextNow(), agent.state.model.contextWindow, view.last(), contextByCommand ? "command" : "setting", promptTokens(lastUsage) || undefined)) io.log(dim(l));
+    for (const l of describeContext(contextNow(), agent.state.model.contextWindow, view.last(), contextByCommand ? "command" : "setting", promptTokens(lastUsage) || undefined)) out.line(dim(l));
   }
 
   return {

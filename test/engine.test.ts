@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { openWorkspace, type Workspace } from "../src/workspace.ts";
 import { createDocStore } from "../src/documents/store.ts";
 import type { ParsedPdf } from "../src/documents/pdf.ts";
@@ -39,8 +39,22 @@ interface Rig {
   text: () => string;
 }
 
-function rig(opts: { failAuditAfter?: number; pages?: string[]; statementTool?: boolean; fileListFirst?: boolean; workspace?: Workspace } = {}): Rig {
-  const faux = fauxProvider();
+interface RigOptions {
+  failAuditAfter?: number;
+  pages?: string[];
+  statementTool?: boolean;
+  fileListFirst?: boolean;
+  workspace?: Workspace;
+  filesEnabled?: boolean;
+  chat?: boolean;
+  /** The scripted model's context window and output cap (tokens). */
+  window?: number;
+  maxTokens?: number;
+  serverContext?: (modelId: string) => Promise<number | undefined>;
+}
+
+function rig(opts: RigOptions = {}): Rig {
+  const faux = fauxProvider(opts.window || opts.maxTokens ? { models: [{ id: "fake", ...(opts.window ? { contextWindow: opts.window } : {}), ...(opts.maxTokens ? { maxTokens: opts.maxTokens } : {}) }] } : {});
   const models = createModels({ identity: { attribution: null } });
   models.setProvider(faux.provider);
   const audit: Rig["audit"] = [];
@@ -48,7 +62,7 @@ function rig(opts: { failAuditAfter?: number; pages?: string[]; statementTool?: 
   const err: string[] = [];
   const cfg = loadConfig({});
   const engine = createEngine({
-    io: { write: (t) => void out.push(t), log: (l) => void out.push(l + "\n"), error: (l) => void err.push(l) },
+    io: { write: (t) => void out.push(t), error: (l) => void err.push(l) },
     provider: "ollama",
     model: faux.getModel(),
     modelId: "fake",
@@ -61,14 +75,15 @@ function rig(opts: { failAuditAfter?: number; pages?: string[]; statementTool?: 
         audit.push({ type, data: (data ?? {}) as Record<string, any> });
       },
     },
-    filesEnabled: true,
+    filesEnabled: opts.filesEnabled ?? true,
     calcShape: "expr",
     context: cfg.context,
     docs: createDocStore(ws, async (): Promise<ParsedPdf> => ({ pages: opts.pages ?? [PAGE] })),
     ...(opts.statementTool === undefined ? {} : { statementTool: opts.statementTool }),
     ...(opts.fileListFirst === undefined ? {} : { fileListFirst: opts.fileListFirst }),
-    chat: false,
+    chat: opts.chat ?? false,
     links: false,
+    ...(opts.serverContext ? { serverContext: opts.serverContext } : {}),
   });
   return { engine, faux, audit, out, err, text: () => out.join("") };
 }
@@ -345,4 +360,100 @@ test("each assistant reply is recorded with its timing and character counts", as
   assert.ok(replies[0].data.timing.callChars > 0); // the tool call
   assert.equal(replies[1].data.timing.textChars, "Net sales were 32,765.".length);
   assert.equal(find(r, "message").find((m) => m.data.message.role === "toolResult")!.data.timing, undefined); // only replies carry timing
+});
+
+test("a prompt near the window gives the context warning once, and the meter with the /new hint in chat", async () => {
+  const r = rig({ window: 1000, chat: true });
+  r.faux.setResponses([fauxAssistantMessage("Fine.")]);
+  await r.engine.ask("pad ".repeat(850));
+  assert.match(r.text(), /\[context\] this step's prompt used \d+ of 1000 tokens/);
+  assert.equal(find(r, "context_warning").length, 1);
+  assert.match(r.text(), /context \d+%: near the limit; \/new starts a fresh conversation/);
+  assert.doesNotMatch(r.text(), /\n\n\n/); // the notes and footer lines never leave two blank lines in a row
+});
+
+test("the meter is plain and has no /new hint in a one-off question", async () => {
+  const r = rig({ window: 100000, chat: false });
+  r.faux.setResponses([fauxAssistantMessage("Fine.")]);
+  await r.engine.ask("hi");
+  assert.match(r.text(), /context \d+%/);
+  assert.doesNotMatch(r.text(), /\/new/);
+  assert.equal(find(r, "context_warning").length, 0);
+});
+
+test("the server's window is checked once per model; a different one is warned about, recorded and used", async () => {
+  let asked = 0;
+  const r = rig({
+    serverContext: async () => {
+      asked++;
+      return 4096;
+    },
+  });
+  r.faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two"), fauxAssistantMessage("three")]);
+  await r.engine.ask("hi");
+  assert.match(r.text(), /Ollama is running fake with a 4096-token window/);
+  assert.deepEqual([find(r, "context_mismatch")[0].data.actual, r.engine.agent.state.model.contextWindow], [4096, 4096]);
+  await r.engine.ask("again");
+  assert.equal(asked, 1); // not asked again for the same model
+  r.engine.useModel(r.faux.getModel(), "other", reasoningProfile("ollama", undefined, "other"));
+  await r.engine.ask("and again");
+  assert.equal(asked, 2); // a model switch asks again
+});
+
+test("a runaway reply is cut off while it streams and the question is retried once", async () => {
+  const r = rig({ maxTokens: 50 }); // 50 tokens: a reply over 300 characters is a runaway
+  r.faux.setResponses([fauxAssistantMessage("x".repeat(1000)), fauxAssistantMessage("Done.")]);
+  assert.equal(await r.engine.ask("hi"), true);
+  assert.equal(find(r, "runaway").length, 1);
+  assert.equal(find(r, "runaway_retry").length, 1);
+  assert.match(r.text(), /\[stopped\] one reply longer than 300 characters/);
+  assert.match(r.text(), /\[repair\] the model got stuck in a loop/);
+  assert.match(r.text(), /Done\./);
+  assert.equal(r.faux.state.callCount, 2);
+  assert.doesNotMatch(r.text(), /\n\n\n/);
+});
+
+test("the runaway cap follows the model chosen with /model", async () => {
+  const r = rig({ maxTokens: 50 });
+  r.engine.useModel({ ...r.faux.getModel(), maxTokens: 16384 }, "big", reasoningProfile("ollama", undefined, "big"));
+  r.faux.setResponses([fauxAssistantMessage("x".repeat(1000))]);
+  assert.equal(await r.engine.ask("hi"), true);
+  assert.equal(find(r, "runaway").length, 0);
+  assert.equal(r.faux.state.callCount, 1);
+});
+
+test("a spent file-reading budget refuses further reads (soft stop) and the answer carries a note", async () => {
+  const page = (n: number) => ["Consolidated Statements of Income", "(in millions)", "Year ended December 31  |  2022  |  2021", ...Array.from({ length: 80 }, (_, i) => `Row ${n}-${i} filler text for the page  |  ${i + 1}  |  ${i + 2}`)].join("\n");
+  const r = rig({ pages: [1, 2, 3, 4, 5].map(page) });
+  let last = "";
+  r.faux.setResponses([
+    ...[1, 2, 3, 4, 5].map((n) => fauxAssistantMessage([fauxToolCall("read_page", { path: "a.pdf", page: n }, { id: `r${n}` })], { stopReason: "toolUse" })),
+    (context) => {
+      last = JSON.stringify(context.messages.filter((m: any) => m.role === "toolResult").at(-1));
+      return fauxAssistantMessage("I could not read more.");
+    },
+  ]);
+  assert.equal(await r.engine.ask("Summarise the filing."), true);
+  assert.ok(find(r, "guard").some((g) => g.data.kind === "blocked"));
+  assert.match(last, /No more tool calls are available/);
+  assert.equal(find(r, "budget_note").length, 1);
+  assert.equal(find(r, "run_end")[0].data.outcome, "ok");
+});
+
+test("without file access there is no file tool and no file list", async () => {
+  const r = rig({ filesEnabled: false });
+  r.faux.setResponses([fauxAssistantMessage("Hello.")]);
+  await r.engine.ask("hi");
+  const start = find(r, "session_start")[0].data;
+  assert.deepEqual(start.tools, ["calculate"]);
+  assert.equal(start.filesEnabled, false);
+  assert.equal(find(r, "file_listing").length, 0);
+});
+
+test("a reply with thinking shows a thinking line on its own line and records the thinking size", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([fauxThinking("let me see"), fauxText("Done.")])]);
+  await r.engine.ask("hi");
+  assert.match(r.text(), /thinking…\S*\nDone\./);
+  assert.equal(find(r, "message").find((m) => m.data.message.role === "assistant")!.data.timing.thinkingChars, "let me see".length);
 });

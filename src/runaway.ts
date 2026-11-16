@@ -37,15 +37,15 @@ export function detectRunaway(content: readonly any[] | undefined, maxCalls: num
 
 /**
  * Aborts the in-flight request as soon as a streaming reply is a runaway and reports why. Nothing from that reply runs:
- * tool calls execute only after a reply completes. `maxChars` (optional) caps the size of one reply. Returns the
- * unsubscribe function.
+ * tool calls execute only after a reply completes. `maxChars` (optional, a number or a function read for each reply)
+ * caps the size of one reply. Returns the unsubscribe function.
  */
-export function guardRunaway(agent: Agent, maxCalls: number, onRunaway: (reason: string) => void, maxChars = Infinity): () => void {
+export function guardRunaway(agent: Agent, maxCalls: number, onRunaway: (reason: string) => void, maxChars: number | (() => number) = Infinity): () => void {
   let fired = false;
   return agent.subscribe((e) => {
     if (e.type === "message_start") fired = false; // a new reply
     if (e.type !== "message_update" || fired || (e.message as any).role !== "assistant") return;
-    const reason = detectRunaway((e.message as any).content, maxCalls, MAX_IDENTICAL_CALLS, maxChars);
+    const reason = detectRunaway((e.message as any).content, maxCalls, MAX_IDENTICAL_CALLS, typeof maxChars === "function" ? maxChars() : maxChars);
     if (!reason) return;
     fired = true;
     onRunaway(reason);

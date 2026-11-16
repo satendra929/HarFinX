@@ -43,11 +43,6 @@ export function summarizeCheck(checked: Checked[]): CheckSummary {
   };
 }
 
-/** Checks one answer's text against the ledger. */
-export function checkAnswer(text: string, ledger: Ledger): CheckSummary {
-  return summarizeCheck(checkText(text, ledger));
-}
-
 /** The line to show the user: a warning when a figure is unverified, otherwise nothing. */
 export function checkLine(s: CheckSummary): { text: string; warn: boolean } | undefined {
   if (s.figures === 0) return undefined;

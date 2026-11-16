@@ -87,7 +87,4 @@ export class LineMarker {
     this.buf = "";
     return tail === "" ? "" : replyEnded ? this.mark(tail) : this.plain(tail);
   }
-  get waiting(): boolean {
-    return this.buf !== "";
-  }
 }

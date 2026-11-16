@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyReasoningHistory, stripHistoryReasoning } from "../src/payload.ts";
+import { applyReasoningHistory } from "../src/payload.ts";
 
 const payload = () => ({
   model: "qwen3:14b",
@@ -16,7 +16,7 @@ const payload = () => ({
 });
 
 test("removes reasoning fields from assistant messages only, keeping tool calls and content", () => {
-  const out: any = stripHistoryReasoning(payload());
+  const out: any = applyReasoningHistory(payload(), "drop");
   assert.equal(out.messages[2].reasoning, undefined);
   assert.equal(out.messages[4].reasoning_content, undefined);
   assert.equal(out.messages[4].reasoning_text, undefined);
@@ -32,10 +32,10 @@ test("removes reasoning fields from assistant messages only, keeping tool calls 
 
 test("does not mutate its input and tolerates odd payloads", () => {
   const p = payload();
-  stripHistoryReasoning(p);
+  applyReasoningHistory(p, "drop");
   assert.equal(p.messages[2].reasoning, "thinking 1");
-  assert.equal(stripHistoryReasoning(undefined as never), undefined);
-  assert.deepEqual(stripHistoryReasoning({ model: "x" } as never), { model: "x" });
+  assert.equal(applyReasoningHistory(undefined as never, "drop"), undefined);
+  assert.deepEqual(applyReasoningHistory({ model: "x" } as never, "drop"), { model: "x" });
 });
 
 const loop = () => ({
@@ -59,7 +59,6 @@ test("reasoning-history policies: keep changes nothing, drop removes all, latest
   assert.deepEqual(reasoningOf(applyReasoningHistory(loop(), "keep")), [null, null, "r-old", null, "r1", null, "r2", null]);
   assert.deepEqual(reasoningOf(applyReasoningHistory(loop(), "drop")), [null, null, null, null, null, null, null, null]);
   assert.deepEqual(reasoningOf(applyReasoningHistory(loop(), "latest")), [null, null, null, null, null, null, "r2", null]);
-  assert.deepEqual(applyReasoningHistory(loop(), "drop"), stripHistoryReasoning(loop()));
   // tool calls, content and other roles survive every policy
   for (const h of ["keep", "drop", "latest"] as const) {
     const out: any = applyReasoningHistory(loop(), h);

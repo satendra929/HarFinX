@@ -44,8 +44,3 @@ export function applyReasoningHistory<T>(payload: T, history: ReasoningHistory):
     }),
   };
 }
-
-/** Returns a copy of an OpenAI-style chat payload without reasoning fields on assistant messages ("drop"). */
-export function stripHistoryReasoning<T>(payload: T): T {
-  return applyReasoningHistory(payload, "drop");
-}

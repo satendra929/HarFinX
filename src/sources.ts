@@ -48,8 +48,6 @@ export interface SourceEntry {
   units?: string;
   columns?: string;
   period?: string;
-  /** At least one of its figures was shown during the current question. */
-  current: boolean;
   rows: SourceRow[];
   /** Rows beyond the row limit: counted, not listed. */
   moreRows?: number;
@@ -117,12 +115,6 @@ export function describePositions(figures: readonly SourceFigure[]): string | un
   return ps.every((p) => p.of === total) ? `${ps.map((p) => ORD(p.at)).join(" and ")} of ${total} cells` : ps.map((p) => `${ORD(p.at)} of ${p.of}`).join(", ");
 }
 
-/** Kept for readers of one figure: the text for a single position. */
-export function cellPosition(row: string, raw: string): string | undefined {
-  const at = cellIndex(row, raw);
-  return at ? describePositions([{ raw, position: at }]) : undefined;
-}
-
 function labelAboveOf(lines: readonly string[] | undefined, lineNo: number | undefined, row: string): string | undefined {
   const label = row.split("|")[0];
   if (hasLetters(label) || !lines || lineNo === undefined) return undefined;
@@ -137,10 +129,11 @@ function labelAboveOf(lines: readonly string[] | undefined, lineNo: number | und
  * The sources of the given figures. `figures` are the answer's numbers; `calcInputs` the printed numbers the model
  * gave the calculator during this question (shown the same way, marked as inputs). Years, list numbers and constants
  * are skipped. A figure with no recorded row (not read from a file page or text, or typed by the user only) has no entry.
+ * `order` are the places already numbered by the marks in the answer (RefNumbers.order): the list holds exactly those,
+ * in their numbers, then the places of calculator inputs.
  */
-export function buildSources(figures: readonly NumToken[], calcInputs: readonly NumToken[], ledger: Ledger, limits: SourceLimits = DEFAULT_SOURCE_LIMITS, order?: readonly string[]): SourcesResult {
-  // `order` are the places already numbered by the marks in the answer. The list holds exactly those, then the places of calculator inputs.
-  const allowed = order ? new Set(order) : undefined;
+export function buildSources(figures: readonly NumToken[], calcInputs: readonly NumToken[], ledger: Ledger, order: readonly string[], limits: SourceLimits = DEFAULT_SOURCE_LIMITS): SourcesResult {
+  const allowed = new Set(order);
   const wanted = new Map<string, { token: NumToken; calcInput: boolean }>();
   for (const t of figures) if (!isNonFigure(t) && !wanted.has(t.raw)) wanted.set(t.raw, { token: t, calcInput: false });
   for (const t of calcInputs) if (!isNonFigure(t) && !wanted.has(t.raw)) wanted.set(t.raw, { token: t, calcInput: true });
@@ -157,14 +150,13 @@ export function buildSources(figures: readonly NumToken[], calcInputs: readonly 
     for (const r of found.recs) {
       const w = r.where;
       const key = placeKey(w);
-      if (allowed && !calcInput && !allowed.has(key)) continue; // a place with no number in the answer: not listed
+      if (!calcInput && !allowed.has(key)) continue; // a place with no number in the answer: not listed
       let entry = entries.get(key);
       const header = w.pageLines && w.lineNo !== undefined ? nearestHeader(w.pageLines, w.lineNo) : {};
       if (!entry) {
-        entry = { key, ref: 0, file: w.file, page: w.page, printed: w.printed, title: w.pageLines ? sectionTitle(w.pageLines) : undefined, units: header.units, columns: header.columns, period: header.period, current: false, rows: [] };
+        entry = { key, ref: 0, file: w.file, page: w.page, printed: w.printed, title: w.pageLines ? sectionTitle(w.pageLines) : undefined, units: header.units, columns: header.columns, period: header.period, rows: [] };
         entries.set(key, entry);
       }
-      if (w.q === ledger.question) entry.current = true;
       // The figure is shown as the source prints it (r.raw), not as the answer wrote it ("$5,818 million").
       const figure: SourceFigure = { raw: r.raw, position: cellIndex(w.row, r.raw), calcInput: calcInput || undefined };
       const same = entry.rows.find((x) => sameRow(x.row, w.row));
@@ -182,16 +174,11 @@ export function buildSources(figures: readonly NumToken[], calcInputs: readonly 
     }
   }
   const ordered = [...entries.values()].map((e) => ({ ...e, moreRows: Math.max(0, e.rows.length - limits.rowsPerPage), rows: e.rows.slice(0, limits.rowsPerPage) }));
-  if (order) {
-    // the numbered places in their numbers, then the others (calculator inputs) after them
-    const at = (e: SourceEntry) => (order.includes(e.key) ? order.indexOf(e.key) : order.length);
-    ordered.sort((a, b) => at(a) - at(b)); // stable: the order read is kept among the others
-    let extra = order.length;
-    for (const e of ordered) e.ref = order.includes(e.key) ? order.indexOf(e.key) + 1 : ++extra;
-  } else {
-    ordered.sort((a, b) => Number(b.current) - Number(a.current)); // current question first; sort is stable, so the order read is kept inside each group
-    ordered.forEach((e, i) => (e.ref = i + 1));
-  }
+  // the numbered places in their numbers, then the others (calculator inputs) after them
+  const at = (e: SourceEntry) => (order.includes(e.key) ? order.indexOf(e.key) : order.length);
+  ordered.sort((a, b) => at(a) - at(b)); // stable: the order read is kept among the others
+  let extra = order.length;
+  for (const e of ordered) e.ref = order.includes(e.key) ? order.indexOf(e.key) + 1 : ++extra;
   return { entries: ordered.slice(0, limits.entries), many, moreEntries: Math.max(0, ordered.length - limits.entries) };
 }
 

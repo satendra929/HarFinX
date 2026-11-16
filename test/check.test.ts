@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { answerTextSince, checkAnswer, checkLine, summarizeCheck } from "../src/check.ts";
+import { answerTextSince, checkLine, summarizeCheck } from "../src/check.ts";
 import { checkText, Ledger } from "../src/provenance.ts";
 
+const checkAnswer = (text: string, l: Ledger) => summarizeCheck(checkText(text, l));
 const asst = (...blocks: { type: string; text?: string; thinking?: string }[]) => ({ role: "assistant", content: blocks });
 const text = (t: string) => ({ type: "text", text: t });
 const think = (t: string) => ({ type: "thinking", thinking: t });
