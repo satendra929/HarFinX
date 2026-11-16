@@ -56,7 +56,8 @@ test("outline tool: a builder that throws gives 'No outline found', not an error
 test("outline is not a source: its text holds no figure that traces, and a figure echoed from it is untraced", async () => {
   const r = await run(outlineTool(store(filing())), { path: "f.pdf" });
   assert.ok(r.content[0].text.length < 2300);
-  assert.equal(checkText("Item 15 lists the exhibits.", new Ledger()).some((c) => c.cls === "X"), true); // pinned: today's behaviour for "Item 15"
+  assert.equal(checkText("Item 15 lists the exhibits.", new Ledger()).some((c) => c.cls === "X"), false); // "Item 15" is a reference label, not a figure
+  assert.equal(checkText("Item 15 lists 4,321 exhibits.", new Ledger()).some((c) => c.cls === "X"), true); // a figure that no source holds is untraced
 });
 
 test("search section: only pages inside the section are ranked; the head line names it; ids, titles and misses", async () => {

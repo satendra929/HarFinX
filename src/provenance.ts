@@ -34,17 +34,36 @@ import { D, type Num } from "./calc/num.ts";
 const ZERO_WIDTH = /[​-‏⁠﻿­]/g;
 // Real, capitalised month names only. A looser pattern (Mar[a-z]*) erased "margin 11.35%" and "decrease 5%".
 const MONTHS = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\.?";
-// Things that look like numbers but are labels. Replaced by a space before extraction.
+// What is a figure? One order, applied to the source text and to the answer alike, so both sides always agree:
+//   1. LABELS (below) are blanked first: names and codes that contain digits (file names, forms, pages, dates and fiscal
+//      periods, "Note 7", "ASC 606", and a whole number joined to a word by a hyphen: COVID-19, 30-day, Rule 10b-5).
+//   2. Every number left is extracted (extractNumbers); then a list number, a bare year or a usual constant is not a figure (K).
+//   3. Anything else is a figure and is traced to the file, the question or the calculator.
+// A whole number joined to a word by a hyphen is a label only when it has no unit marker: a currency sign, %, decimals,
+// a thousands comma, a scale word, or digits on both sides of the hyphen ("$500-million", "5-10%", "2.5-year",
+// "1,200-person", "$5-6 million", "2022-2023") keep it a figure. Left on purpose, as written, not guessed: a bare whole
+// number after a hyphen or a citation word is a label even if meant as an amount ("Revenue-5", "Item 500"); "2016-13" alone is
+// a range; "3M" is checked but not marked (looksLikeName, sources.ts).
+const LB = String.raw`(?<![\p{L}\p{N}_.,$€£-])`; // not inside a word or number, not after a currency sign or a hyphen
+const END = String.raw`(?![\p{L}\p{N}]|[.,]\d|%)`; // not followed by more digits, a decimal, a thousands comma or a percent
+const HY = String.raw`[-‐‑]`; // hyphen, and the typographic hyphens NFKC leaves alone
+const SCALEW = String.raw`(?!(?:thousand|million|billion|trillion|bn|mm|k|m|b|percent|percentage|basis|bps?|pct)\b)`; // "500-million", "5-percent" and "25-basis-point" are amounts, "30-day" is not
+// Things that look like numbers but are labels. Replaced by a space before extraction. Order matters: the code and
+// number-hyphen-word rules run before letters-hyphen-number (or "3-for-1" leaves a stray 3), and the citation words last (or "Rule 10b5-1" is cut in two).
 const LABELS: RegExp[] = [
   /[\w./\\-]+\.(?:txt|csv|md|json|jsonl|pdf)\b/gi, // file names such as fb-00001.txt or filings/ACME_2023_10K.pdf
   /\b(?:10-?[KQ]|8-?K|20-?F|S-1)\b/gi, // form names
   /\bpages?\s+\d+\s+of\s+\d+\b/gi, // "page 68 of 136" (read_page headers); before the generic page pattern below
   /\bparts?\s+\d+(?:\s+of\s+\d+)?\b/gi, // "part 2 of 3"
   /\bpp?\.\s?\d+(?:\s*[-–]\s*\d+)?\b/gi, // "p.68", "pp. 66-68"
-  /\b(?:FY|CY|Q|H)\s?'?\d{1,4}\b/gi, // FY2021, Q1, H2
+  /\b(?:FY|CY|Q|H)\s?'?\d{1,4}(?:-\d{2,4}(?![\d%]|[.,]\d)|\b)/gi, // FY2021, Q1, H2, FY2022-23, Q3-2022
   /\b\d[QH]\b/gi, // 1Q, 2H
   new RegExp(`\\b${MONTHS}\\s+\\d{1,2}(?!\\d|%|[.,]\\d)(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?`, "g"), // December 31, 2018 (case-sensitive, day not a figure)
-  /\b(?:rows?|lines?|pages?|notes?|steps?|chunks?|characters?|offsets?|sections?|exhibits?)\s+\d+(?:\s*[-–]\s*\d+)?(?!\s?%)/gi, // "row 12", "characters 0-1775"
+  /\b(?:rows?|lines?|pages?|notes?|steps?|chunks?|characters?|offsets?|sections?|exhibits?)\s+\d+(?:\s*[-–]\s*\d+)?(?!\s?%|\.\d+\s?(?:%|(?:percent|thousand|million|billion|trillion|bn|mm)\b))/gi, // "row 12", "characters 0-1775" (not "Note 7.5% of revenue")
+  new RegExp(LB + String.raw`(?!\d+(?:bn|mm|k|m)\d*-)\d+[a-z]{1,2}\d*${HY}\d+` + END, "gu"), // "10b-5", "10b5-1", "12b-25" (lowercase: "5M-6M" is a range)
+  new RegExp(LB + String.raw`\d+${HY}` + SCALEW + String.raw`\p{L}+(?:${HY}\d+)?(?![\d%]|[.,]\d)`, "gu"), // "30-day", "7-Eleven", "3-for-1" ("500-million" stays)
+  new RegExp(LB + String.raw`\p{L}+${HY}\d+` + END, "gu"), // "COVID-19", "A-1", "SFAS-142"
+  /\b(?:ASC|ASU|SFAS|FAS|IFRS|IAS|Topics?|Rules?|Regulations?|Items?|Articles?|Schedules?)[ \t]+\d+(?:-\d+)*[A-Za-z]?(?![\d%]|[.,-]\d)/gi, // "ASC 606", "ASU 2016-13", "Item 1A" (whole numbers only: "Rule 4.5 billion" is an amount)
 ];
 
 /** Unicode and markup clean-up shared by source and answer text. */

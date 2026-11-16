@@ -457,3 +457,10 @@ test("a reply with thinking shows a thinking line on its own line and records th
   assert.match(r.text(), /thinking…\S*\nDone\./);
   assert.equal(find(r, "message").find((m) => m.data.message.role === "assistant")!.data.timing.thinkingChars, "let me see".length);
 });
+
+test("the system prompt tells the model how the harness tells figures from labels", () => {
+  const r = rig();
+  const prompt = find(r, "session_start")[0].data.systemPrompt as string;
+  assert.match(prompt, /checks every figure you write/);
+  assert.match(prompt, /COVID-19, Rule 10b-5, ASC 606, 30-day\) are labels, not figures/);
+});
