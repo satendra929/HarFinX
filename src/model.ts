@@ -44,6 +44,9 @@ export function createModelFor(cfg: Config): { models: ReturnType<typeof createM
         // 4,096-token margin, so in a small window (8k) it would ask for almost no output once the prompt grows
         // past about half the window. A looping reply is stopped by src/runaway.ts instead.
         compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
+        // Pi merges these into every request body; Ollama's OpenAI-compatible API reads `temperature`. Unset: nothing is
+        // sent and Ollama uses the model's own default.
+        ...(cfg.ollamaTemperature !== undefined ? { samplingParams: { temperature: cfg.ollamaTemperature } } : {}),
       };
       models.setProvider(
         createProvider({

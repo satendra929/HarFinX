@@ -12,7 +12,7 @@ import type { Workspace } from "./workspace.ts";
 import { cleanForTerminal, createGuard, DEFAULT_LIMITS } from "./guard.ts";
 import type { AuditLog } from "./audit.ts";
 import { readFileTool } from "./tools/readFile.ts";
-import { calculateTool } from "./tools/calculate.ts";
+import { calcOf, calculateTool } from "./tools/calculate.ts";
 import { Ledger, checkText, extractNumbers, normalise, type SourceMeta } from "./provenance.ts";
 import { buildSources, DEFAULT_SOURCE_LIMITS, formatSources, sourcesForAudit } from "./sources.ts";
 import { shownOf } from "./shown.ts";
@@ -226,6 +226,7 @@ export function createEngine(opts: EngineOptions): Engine {
     ...opts.sessionStart,
     model: modelId,
     contextWindow: model.contextWindow,
+    sampling: model.samplingParams ?? null, // null: the model's own defaults
     filesEnabled: opts.filesEnabled,
     calcShape: opts.calcShape,
     reasoning: { history: reasoning.history, thinkingOffSwitch: reasoning.thinkingOff ?? null },
@@ -273,7 +274,21 @@ export function createEngine(opts: EngineOptions): Engine {
       }
     }
     // What a reading tool showed the model goes to the ledger, from the result's structured content. Before the next tool runs (calculate is sequential).
-    if (e.type === "tool_execution_end" && !e.isError) for (const s of shownOf(e.result)) feedLedger(s.label, s.text, s.meta);
+    if (e.type === "tool_execution_end" && !e.isError) {
+      for (const s of shownOf(e.result)) feedLedger(s.label, s.text, s.meta);
+      // A calculation's results go to the ledger the same way, so a later step can quote them; its printed inputs are kept for the references.
+      if (e.toolName === "calculate") {
+        const calc = calcOf(e.result);
+        calcInputs.push(...calc.inputs);
+        for (const s of calc.steps) {
+          try {
+            ledger.addCalc(s.name, s.value, s.shown, s.pct);
+          } catch (err) {
+            record("ledger_feed_error", { label: `calculate ${s.name}`, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+      }
+    }
     if (e.type === "tool_execution_start") record("tool_start", { toolCallId: e.toolCallId, tool: e.toolName, args: e.args });
     else if (e.type === "tool_execution_end") {
       record("tool_end", { toolCallId: e.toolCallId, tool: e.toolName, isError: e.isError, durationMs: e.durationMs });
@@ -287,10 +302,6 @@ export function createEngine(opts: EngineOptions): Engine {
       // After a search: the pages it returned, so a wrong pick is visible.
       const line = e.isError ? undefined : e.toolName === "search" ? searchResultLine(e.result?.details) : e.toolName === "outline" ? outlineResultLine(e.result?.details) : undefined;
       if (line) out.line(dim(line));
-      // The printed numbers the model gave the calculator: the Sources block shows where they come from.
-      if (e.toolName === "calculate" && !e.isError && Array.isArray(e.result?.details?.inputs)) {
-        for (const i of e.result.details.inputs) if (typeof i?.literal === "string") calcInputs.push(i.literal);
-      }
       return;
     }
     if (e.type !== "message_update") return;

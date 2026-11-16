@@ -9,6 +9,8 @@ export interface Config {
   ollamaBaseUrl: string;
   /** The context window the harness assumes for local models, in tokens. Read from OLLAMA_CONTEXT_LENGTH, the same variable the Ollama server uses, so the two cannot drift apart. */
   ollamaContext: number;
+  /** OLLAMA_TEMPERATURE: sent with every request to a local model; undefined leaves the model's own default. */
+  ollamaTemperature?: number;
   anthropicModel: string;
   anthropicApiKey: string;
   workspaceDir: string;
@@ -66,6 +68,15 @@ export function parseContextLength(raw: string | undefined): number {
   return n;
 }
 
+/** Parses OLLAMA_TEMPERATURE: a number from 0 to 2; empty or unset means the model's own default (undefined). */
+export function parseTemperature(raw: string | undefined): number | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  const n = Number(text);
+  if (!/^\d+(?:\.\d+)?$/.test(text) || n > 2) throw new Error(`OLLAMA_TEMPERATURE must be a number from 0 to 2 (got "${text}").`);
+  return n;
+}
+
 /** `overrides.model` (the --model flag) wins over OLLAMA_MODEL; either may be a short name such as "gemma". */
 export function loadConfig(overrides: { model?: string } = {}): Config {
   let envFileFound = true;
@@ -91,6 +102,7 @@ export function loadConfig(overrides: { model?: string } = {}): Config {
     ollamaModel: resolveModel(overrides.model?.trim() || env.OLLAMA_MODEL?.trim() || DEFAULT_OLLAMA_MODEL),
     ollamaBaseUrl: env.OLLAMA_BASE_URL?.trim() || "http://localhost:11434/v1",
     ollamaContext: parseContextLength(env.OLLAMA_CONTEXT_LENGTH),
+    ollamaTemperature: provider === "ollama" ? parseTemperature(env.OLLAMA_TEMPERATURE) : undefined,
     anthropicModel: env.ANTHROPIC_MODEL?.trim() || "claude-haiku-5-5",
     anthropicApiKey: env.ANTHROPIC_API_KEY?.trim() || "",
     workspaceDir: env.WORKSPACE_DIR?.trim() || "workspace",

@@ -1,6 +1,7 @@
 // The calculator tool. Pure function of its arguments: no files, no network, no clock. Every calculated figure in an
 // answer should come from here (see src/provenance.ts). Inputs are source numbers copied exactly as printed; the tool
-// parses them, computes in exact decimal arithmetic, and returns the values to quote.
+// parses them, computes in exact decimal arithmetic, and returns the values to quote. It reads the ledger only to warn
+// about inputs it cannot trace and writes nothing: the engine records the results from `details` (calcOf).
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { CATEGORIES, FUNCTIONS, FUNCTION_MAP, helpText } from "../calc/functions.ts";
 import { runProgram, type StepInput } from "../calc/evaluate.ts";
@@ -35,6 +36,25 @@ interface Params {
   dp?: number;
   pct?: boolean;
   help?: string;
+}
+
+/** A calculation as its result's `details` record it: the printed inputs and each step's exact value and shown text. */
+export interface CalcRecord {
+  inputs: string[];
+  steps: { name: string; value: string; shown: string; pct: boolean }[];
+}
+
+/**
+ * The calculation in a calculate result (empty for any other result). The tool only reads the ledger (to warn about
+ * inputs it cannot trace); the host records the results in it from here, as it records what a reading tool showed.
+ */
+export function calcOf(result: unknown): CalcRecord {
+  const d = (result as { details?: { inputs?: unknown; steps?: unknown } } | undefined)?.details;
+  const inputs = Array.isArray(d?.inputs) ? d.inputs.flatMap((i) => (typeof i?.literal === "string" ? [i.literal] : [])) : [];
+  const steps = Array.isArray(d?.steps)
+    ? d.steps.filter((s) => typeof s?.name === "string" && typeof s?.value === "string" && typeof s?.shown === "string").map((s) => ({ name: s.name, value: s.value, shown: s.shown, pct: s.pct === true }))
+    : [];
+  return { inputs, steps };
 }
 
 export function calculateTool(ledger: Ledger, shape: CalcShape = "steps"): AgentTool<any> {
@@ -119,8 +139,6 @@ export function calculateTool(ledger: Ledger, shape: CalcShape = "steps"): Agent
           warnings.push(`step "${s.name}": shows ${s.shown} but the exact value is ${s.full}${s.pct ? " (a fraction)" : ""}; rounding changed it by ${s.displayLoss}%. Do not quote ${s.shown}: ${fix}, then run it again.`);
         }
       }
-
-      for (const s of run.steps) ledger.addCalc(s.name, s.value.toString(), s.shown, s.pct);
 
       const lines: string[] = [];
       if (run.inputs.length) lines.push("inputs: " + run.inputs.map((i) => `${i.name} = ${i.value.toFixed()} (from "${i.literal}")`).join("; "));

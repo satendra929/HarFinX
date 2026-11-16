@@ -447,6 +447,7 @@ test("without file access there is no file tool and no file list", async () => {
   const start = find(r, "session_start")[0].data;
   assert.deepEqual(start.tools, ["calculate"]);
   assert.equal(start.filesEnabled, false);
+  assert.equal(start.sampling, null); // the scripted model has no sampling settings: the model's own defaults
   assert.equal(find(r, "file_listing").length, 0);
 });
 
@@ -463,4 +464,29 @@ test("the system prompt tells the model how the harness tells figures from label
   const prompt = find(r, "session_start")[0].data.systemPrompt as string;
   assert.match(prompt, /checks every figure you write/);
   assert.match(prompt, /COVID-19, Rule 10b-5, ASC 606, 30-day\) are labels, not figures/);
+});
+
+test("the engine records a calculation in the ledger before the next call: a later step may use it, the answer may quote it", async () => {
+  const r = rig();
+  let secondResult = "";
+  r.faux.setResponses([
+    fauxAssistantMessage([read], { stopReason: "toolUse" }),
+    fauxAssistantMessage(
+      [
+        fauxToolCall("calculate", { inputs: { a: "32,765", b: "31,009" }, expr: "(a - b) / b", dp: 1, pct: true }, { id: "c1" }),
+        fauxToolCall("calculate", { inputs: { g: "5.7%" }, expr: "g * 2", dp: 1, pct: true }, { id: "c2" }),
+      ],
+      { stopReason: "toolUse" },
+    ),
+    (context) => {
+      secondResult = JSON.stringify(context.messages.filter((m: any) => m.role === "toolResult" && m.toolCallId === "c2"));
+      return fauxAssistantMessage("Net sales rose 5.7%, and twice that is 11.4%.");
+    },
+  ]);
+  await r.engine.ask("What was the change in net sales from 2021 to 2022?");
+  assert.match(secondResult, /"toolCallId":"c2"/); // the second result was captured
+  assert.doesNotMatch(secondResult, /was not found in the file text/); // 5.7% came from the first calculation
+  assert.equal(find(r, "provenance")[0].data.unverified.length, 0);
+  assert.ok(find(r, "provenance")[0].data.counts.C >= 2);
+  assert.equal(find(r, "ledger_feed_error").length, 0);
 });

@@ -1,11 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { calculateTool } from "../src/tools/calculate.ts";
+import { calcOf, calculateTool } from "../src/tools/calculate.ts";
 import { readFileTool, shownSlice, CHUNK_CHARS } from "../src/tools/readFile.ts";
 import { Ledger, checkText } from "../src/provenance.ts";
 import { createGuard } from "../src/guard.ts";
 import { D, displayLossPercent } from "../src/calc/num.ts";
 
+/** Records a calculation's results in the ledger, as the engine does at the end of the tool call. */
+const record = (ledger: Ledger, r: unknown) => {
+  for (const s of calcOf(r).steps) ledger.addCalc(s.name, s.value, s.shown, s.pct);
+};
 const run = (tool: ReturnType<typeof calculateTool>, params: object) => tool.execute("id", params as never, undefined as never) as Promise<{ content: { text: string }[]; details: any }>;
 const withSource = (text: string) => {
   const l = new Ledger();
@@ -30,6 +34,8 @@ test("steps shape: computes, returns shown values and definitions, and registers
   assert.doesNotMatch(text, /WARNING/);
   assert.equal(r.details.steps[2].shown, "7.9%");
   assert.equal(r.details.rounding, "half away from zero");
+  assert.deepEqual(checkText("7.9%", ledger).map((c) => c.cls), ["X"]); // the tool itself writes nothing to the ledger
+  record(ledger, r);
   // the answer may now quote the calculated figures, but not an invented one
   const cls = checkText("margins 11.35%, 4.50%, average 7.9%, not 13.6%", ledger).map((c) => `${c.token.raw}=${c.cls}`);
   assert.deepEqual(cls, ["11.35%=C", "4.50%=C", "7.9%=C", "13.6%=X"]);
@@ -96,6 +102,7 @@ test("finance functions: the answer is traced to the calculator and the definiti
   assert.match(text, /working_capital = 2,?600/);
   assert.match(text, /definitions: .*gross_margin\(gross_profit, revenue\) = gross_profit \/ revenue/);
   assert.match(text, /current_ratio\(current_assets, current_liabilities\) = /);
+  record(ledger, r);
   assert.deepEqual(checkText("The gross margin was 45.2% and the current ratio 1.40.", ledger).map((c) => c.cls), ["C", "C"]);
 });
 
