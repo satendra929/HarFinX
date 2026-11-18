@@ -22,6 +22,8 @@ export const SCAN_PAGES = 15;
 const COVER_PAGES = 3;
 
 const FORM_LINE = /^\W*(?:FORM\s+)(10-K|10-Q|8-K)(?:\/A)?\W*(?:\(Mark One\))?\W*$/i;
+// A line that is only a form heading for a form this detector does not read ("FORM 20-F"); the three it reads match FORM_LINE first.
+const OTHER_FORM_LINE = /^\W*FORM\s+(\d{1,2}-[A-Z0-9]{1,5})(?:\/A)?\W*(?:\(Mark One\))?\W*$/i;
 const PURSUANT: [RegExp, Form][] = [
   [/ANNUAL REPORT PURSUANT TO SECTION 13 OR 15\(?d\)?/i, "10-K"],
   [/QUARTERLY REPORT PURSUANT TO SECTION 13 OR 15\(?d\)?/i, "10-Q"],
@@ -37,12 +39,23 @@ const words = (s: string) => (s.match(/[A-Za-z]{2,}/g) ?? []).length;
 function coverForm(cover: readonly string[], signals: string[]): Form | undefined {
   const named = new Set<Form>();
   const phrased = new Set<Form>();
+  const otherForms = new Set<string>();
   for (const raw of cover) {
     const line = raw.replace(/\s*\|\s*/g, " ").replace(/\s+/g, " ").trim();
     if (!line || line.length > 160) continue;
     const m = FORM_LINE.exec(line);
     if (m) named.add(m[1].toUpperCase() as Form);
+    else {
+      const other = OTHER_FORM_LINE.exec(line);
+      if (other) otherForms.add(other[1].toUpperCase());
+    }
     for (const [re, f] of PURSUANT) if (re.test(line)) phrased.add(f);
+  }
+  // A heading for some other form (20-F, 40-F, 10-KT, 10-K405 ...) uses the same "annual report pursuant to Section 13 or 15(d)"
+  // wording as a 10-K, so the title phrase alone would call it one.
+  if (otherForms.size) {
+    signals.push(`0 cover names another form (${[...otherForms].join(", ")}): not used`);
+    return undefined;
   }
   const all = new Set<Form>([...named, ...phrased]);
   if (all.size === 1) {

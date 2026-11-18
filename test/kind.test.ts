@@ -46,3 +46,13 @@ test("kind: no pages, or pages with nothing in them, is unknown and never throws
   assert.equal(classifyDocument([]).form, "unknown");
   assert.equal(classifyDocument(["", "", ""]).form, "unknown");
 });
+
+test("kind: a cover headed for another form (20-F, 40-F, 10-KT, 10-K405) is not a 10-K, though its title phrase reads the same", () => {
+  for (const form of ["20-F", "40-F", "10-KT", "10-K405"]) {
+    const cover = `UNITED STATES\nSECURITIES AND EXCHANGE COMMISSION\nWashington, D.C. 20549\nFORM ${form}\nANNUAL REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934\nFor the fiscal year ended December 31, 2022\nCommission file number 1-1234\nACME CORP\n(Exact name of registrant as specified in its charter)`;
+    const k = classifyDocument([cover]);
+    assert.notEqual(k.form, "10-K", form);
+    assert.ok(k.signals.some((s) => /another form/.test(s)), `${form}: ${k.signals.join("; ")}`);
+    assert.equal(supportsStatements(k), false, form);
+  }
+});

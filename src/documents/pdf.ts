@@ -26,6 +26,8 @@ export interface ParseOptions {
   maxTotalChars?: number;
   /** Heap limit of the worker, in MB. */
   memoryMb?: number;
+  /** Read only the first n pages (a cover look: the result has up to n pages, and the scanned-document check is skipped). */
+  firstPages?: number;
   /** Test hook: another worker script. */
   workerUrl?: URL;
   signal?: AbortSignal;
@@ -70,7 +72,7 @@ export function parsePdf(bytes: Uint8Array, opts: ParseOptions = {}): Promise<Pa
   return new Promise<ParsedPdf>((resolve, reject) => {
     if (opts.signal?.aborted) return reject(new PdfError("aborted", message("aborted", o)));
     const worker = new Worker(url, {
-      workerData: { bytes: copy, maxPages: o.maxPages, maxPageChars: o.maxPageChars, maxTotalChars: o.maxTotalChars },
+      workerData: { bytes: copy, maxPages: o.maxPages, maxPageChars: o.maxPageChars, maxTotalChars: o.maxTotalChars, firstPages: opts.firstPages },
       transferList: [copy.buffer],
       resourceLimits: { maxOldGenerationSizeMb: o.memoryMb, maxYoungGenerationSizeMb: 64 },
     });

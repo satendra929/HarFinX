@@ -130,7 +130,7 @@ async function main(): Promise<void> {
       : "File access: OFF for models that are not on this machine (set ALLOW_CLOUD_FILES=1 to allow; file contents would be sent to the provider)",
   );
   console.log(dim(`Audit log: ${audit.path}`));
-  console.log(dim("Commands: /model (list or switch the model), /context (memory level), /new (clear conversation), exit. Ctrl+C stops an answer; at the prompt it quits.\n"));
+  console.log(dim("Commands: /model (list or switch the model), /context (memory level), /files (list the files and the filing each is), /new (clear conversation), exit. Ctrl+C stops an answer; at the prompt it quits.\n"));
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   rl.on("SIGINT", () => {
@@ -158,6 +158,11 @@ async function main(): Promise<void> {
     }
     if (line === "/context" || line.startsWith("/context ")) {
       engine.contextCommand(line.slice("/context".length).trim());
+      if (auditStopped()) break;
+      continue;
+    }
+    if (line === "/files") {
+      await engine.filesCommand();
       if (auditStopped()) break;
       continue;
     }

@@ -6,7 +6,7 @@ import path from "node:path";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { openWorkspace, type Workspace } from "../src/workspace.ts";
 import { createDocStore } from "../src/documents/store.ts";
-import type { ParsedPdf } from "../src/documents/pdf.ts";
+import { PdfError, type ParsedPdf } from "../src/documents/pdf.ts";
 import { createEngine, type Engine } from "../src/engine.ts";
 import { reasoningProfile } from "../src/reasoning.ts";
 import { loadConfig } from "../src/config.ts";
@@ -42,6 +42,7 @@ interface Rig {
 interface RigOptions {
   failAuditAfter?: number;
   pages?: string[];
+  docs?: ReturnType<typeof createDocStore>;
   statementTool?: boolean;
   fileListFirst?: boolean;
   workspace?: Workspace;
@@ -78,7 +79,7 @@ function rig(opts: RigOptions = {}): Rig {
     filesEnabled: opts.filesEnabled ?? true,
     calcShape: "expr",
     context: cfg.context,
-    docs: createDocStore(ws, async (): Promise<ParsedPdf> => ({ pages: opts.pages ?? [PAGE] })),
+    docs: opts.docs ?? createDocStore(ws, async (): Promise<ParsedPdf> => ({ pages: opts.pages ?? [PAGE] })),
     ...(opts.statementTool === undefined ? {} : { statementTool: opts.statementTool }),
     ...(opts.fileListFirst === undefined ? {} : { fileListFirst: opts.fileListFirst }),
     chat: opts.chat ?? false,
@@ -149,6 +150,26 @@ test("a reply with no answer twice ends with a note, not a loop", async () => {
   assert.equal(find(r, "repair_failed").length, 1);
   assert.equal(r.faux.state.callCount, 2); // one retry only
   assert.match(r.text(), /the model returned no answer/);
+});
+
+test("a call that repeats an earlier one is not run: the model is told, the budget is not spent, the audit says so", async () => {
+  const r = rig();
+  let seen = "";
+  r.faux.setResponses([
+    fauxAssistantMessage([read], { stopReason: "toolUse" }),
+    fauxAssistantMessage([fauxToolCall("read_page", { path: "a.pdf", page: 1 }, { id: "t9" })], { stopReason: "toolUse" }),
+    (context) => {
+      seen = JSON.stringify(context.messages);
+      return fauxAssistantMessage("Net sales were 32,765.");
+    },
+  ]);
+  const ok = await r.engine.ask("What were net sales in 2022?");
+  assert.equal(ok, true);
+  assert.match(seen, /same call as one already made/);
+  assert.deepEqual(find(r, "guard").filter((g) => g.data.kind === "repeat").map((g) => g.data.free), [true]);
+  assert.equal(find(r, "guard").filter((g) => g.data.kind === "call").length, 1); // only the first read counted
+  assert.notEqual(find(r, "run_end")[0].data.outcome, "guard_tripped");
+  assert.equal(find(r, "budget_note").length, 0);
 });
 
 test("a model that never stops calling tools is stopped by the guard", async () => {
@@ -298,6 +319,48 @@ const seenFirst = (r: Rig) => {
   ]);
   return box;
 };
+
+const COVER_PAGE = "UNITED STATES\nSECURITIES AND EXCHANGE COMMISSION\nFORM 10-K\nANNUAL REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934\nFor the fiscal year ended January 28, 2023\nCommission file number 1-1234\nACME CORP\n(Exact name of registrant as specified in its charter)\nDelaware | 12-3456789\n(State or other jurisdiction of | (I.R.S. Employer";
+
+test("the file list in the first message says which filing each PDF is; the audit counts them; /files shows the same to the user", async () => {
+  const r = rig({ pages: [COVER_PAGE] });
+  const first = seenFirst(r);
+  await r.engine.ask("What were net sales?");
+  assert.match(first.text, /a\.pdf {2}\(4 B\) {2}— {2}ACME CORP · 10-K · FY ended January 28, 2023/);
+  assert.match(first.text, /read from each PDF's cover/);
+  assert.equal(find(r, "file_listing")[0].data.identified, 1);
+
+  const before = r.out.length;
+  await r.engine.filesCommand();
+  const shown = r.out.slice(before).join("");
+  assert.match(shown, /\[2 files in the workspace\]/);
+  assert.match(shown, /a\.pdf {2}\(4 B\) {2}— {2}ACME CORP · 10-K · FY ended January 28, 2023/);
+  assert.deepEqual(find(r, "files_command").map((a) => a.data), [{ count: 2, identified: 1 }]);
+
+  const off = rig({ filesEnabled: false });
+  await off.engine.filesCommand();
+  assert.match(off.text(), /File access is off/);
+  assert.equal(find(off, "files_command").length, 0);
+});
+
+test("Ctrl+C while the covers are being read stops the question before the model is asked; the next question still carries the list", async () => {
+  let looks = 0;
+  const hang = createDocStore(ws, undefined, (_b, signal) => (++looks > 1 ? Promise.resolve({ pages: [PAGE] }) : new Promise<ParsedPdf>((_, reject) => signal?.addEventListener("abort", () => reject(new PdfError("aborted", "cancelled"))))));
+  const r = rig({ docs: hang });
+  let asked = 0;
+  r.faux.setResponses([() => (asked++, fauxAssistantMessage("ok"))]);
+  const q = r.engine.ask("What were net sales?");
+  await new Promise((res) => setTimeout(res, 50));
+  assert.equal(r.engine.stop(), true); // the look is running: Ctrl+C is taken
+  await q;
+  assert.equal(asked, 0); // the model was never asked
+  assert.equal(find(r, "run_end")[0].data.outcome, "aborted");
+  assert.equal(find(r, "file_listing").length, 0);
+  assert.equal(r.engine.stop(), false); // nothing is running any more
+  const next = seenFirst(r);
+  await r.engine.ask("Again?");
+  assert.match(next.text, /Files in the workspace/); // the list was not used up
+});
 
 test("the first question of a conversation carries the small workspace's file list; later ones and the checks do not", async () => {
   const r = rig();

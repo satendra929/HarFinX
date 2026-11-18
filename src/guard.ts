@@ -9,7 +9,9 @@ export type GuardEvent =
   | { kind: "call"; n: number; max: number; tool: string }
   | { kind: "tripped"; reason: string }
   | { kind: "blocked"; tool: string; reason: string }
-  | { kind: "truncated"; tool: string; maxChars: number; originalChars: number };
+  | { kind: "truncated"; tool: string; maxChars: number; originalChars: number }
+  /** The call repeats an earlier successful one of this question and is not run; `free` when it was not counted against the call limit. */
+  | { kind: "repeat"; tool: string; free: boolean };
 
 export interface GuardOptions {
   maxCallsPerRun: number;
@@ -19,7 +21,16 @@ export interface GuardOptions {
   onEvent?: (event: GuardEvent) => void;
   /** Tools whose small, pure output must keep working after the output budget is spent (the calculator). */
   budgetExempt?: string[];
+  /**
+   * Names a call so that two calls with the same key would return the same result (src/callKey.ts); undefined means the call
+   * is never a repeat. When given, a call whose key is that of an earlier call that ran without error in this question is not
+   * run. Without it nothing is treated as a repeat.
+   */
+  callKey?: (name: string, args: unknown) => string | undefined;
 }
+
+/** Repeats per question that are refused without counting against the call limit; later ones count like any call, so a loop still ends. */
+export const MAX_FREE_REPEATS = 2;
 
 // Sized for an 8k-token window (numbers tokenise at ~2-3 chars/token). The default window is 16k, so these are tighter than
 // they need to be there; they do not yet scale with the window.
@@ -53,7 +64,13 @@ export function cleanForTerminal(s: string): string {
 export const ANSWER_NOW =
   "No more tool calls are available for this question. Answer now from what you have already read, use calculate for any arithmetic, and say what you could not find.";
 
+/** What the model is told when a call repeats an earlier one. No digits, for the same reason as ANSWER_NOW. */
+export const REPEATED_CALL =
+  "This is the same call as one already made in this question, so it would return the same result and was not run. Use that earlier result, or make a different call (other words, another page, another file; a year or date in a search makes no difference), or answer from what you have read.";
+
 export function createGuard(opts: GuardOptions) {
+  const done = new Set<string>(); // keys of the calls of this question that ran without error
+  let freeRepeats = 0;
   let calls = 0;
   let totalChars = 0;
   let tripped: string | undefined;
@@ -88,7 +105,23 @@ export function createGuard(opts: GuardOptions) {
     reply++;
   }
 
-  function onToolStart(name: string, _args?: unknown): void {
+  const isRepeat = (name: string, args: unknown): boolean => {
+    const key = opts.callKey?.(name, args);
+    return !!key && done.has(key);
+  };
+
+  function onToolStart(name: string, args?: unknown): void {
+    // A repeat of an earlier call is not run (beforeToolCall); the first few do not count against the limit, but only while
+    // the limit is not passed: past it a repeat counts like any call, so the soft and hard stop see it.
+    if (!tripped && isRepeat(name, args)) {
+      const free = freeRepeats < MAX_FREE_REPEATS && !callsOver(name);
+      opts.onEvent?.({ kind: "repeat", tool: name, free });
+      if (free) {
+        freeRepeats++;
+        opts.log(`not run: ${safeForLog(name, 60)} was already called the same way in this question`);
+        return;
+      }
+    }
     calls++;
     opts.onEvent?.({ kind: "call", n: calls, max: opts.maxCallsPerRun, tool: name });
     // Counted here, not in beforeToolCall: an unknown tool name never reaches that hook.
@@ -97,6 +130,8 @@ export function createGuard(opts: GuardOptions) {
 
   return {
     startRun(): void {
+      done.clear();
+      freeRepeats = 0;
       calls = 0;
       totalChars = 0;
       tripped = undefined;
@@ -144,6 +179,8 @@ export function createGuard(opts: GuardOptions) {
         reason = `tool output limit reached (${opts.maxTotalChars} characters per question)`;
         refuse(reason, name);
       }
+      // A repeat is neither a limit nor a failure: the model is told to use the earlier result (blockedBy stays unset, so no budget note).
+      if (!reason && isRepeat(name, ctx.toolCall.arguments)) return { block: true, reason: REPEATED_CALL };
       if (!reason) return undefined;
       blockedBy ??= reason;
       opts.log(`blocked ${safeForLog(name, 60)}: ${reason}`);
@@ -153,6 +190,11 @@ export function createGuard(opts: GuardOptions) {
     },
 
     async afterToolCall(ctx: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
+      // Only a call that ran and did not fail is remembered (a blocked call never gets here; a failed one may be tried again).
+      if (!ctx.isError) {
+        const key = opts.callKey?.(ctx.toolCall?.name, ctx.toolCall?.arguments); // the call's own arguments, as at its start: the three keys cannot differ
+        if (key) done.add(key);
+      }
       let truncated = false;
       const content = ctx.result.content.map((part) => {
         if (part.type !== "text") return part;

@@ -10,12 +10,14 @@ interface Input {
   maxPages: number;
   maxPageChars: number;
   maxTotalChars: number;
+  /** Only the first n pages are read (a cover look). */
+  firstPages?: number;
 }
 type Failure = "invalid" | "password" | "too_many_pages" | "too_much_text" | "no_text" | "failed";
 const reply = (m: { ok: true; pages: string[] } | { ok: false; code: Failure; detail?: number }) => parentPort!.postMessage(m);
 
 async function main(): Promise<void> {
-  const { bytes, maxPages, maxPageChars, maxTotalChars } = workerData as Input;
+  const { bytes, maxPages, maxPageChars, maxTotalChars, firstPages } = workerData as Input;
   let pdf;
   try {
     // Text only: no system fonts, no font loading, no logging. (This pdf.js build has no script-evaluation option.)
@@ -28,7 +30,8 @@ async function main(): Promise<void> {
 
   const pages: string[] = [];
   let total = 0;
-  for (let n = 1; n <= pdf.numPages; n++) {
+  const last = firstPages ? Math.min(pdf.numPages, firstPages) : pdf.numPages;
+  for (let n = 1; n <= last; n++) {
     const page = await pdf.getPage(n);
     const content = await page.getTextContent();
     const items: TextItem[] = [];
@@ -46,7 +49,7 @@ async function main(): Promise<void> {
   }
   // Scanned documents have images but almost no text: say so instead of returning empty pages.
   const withText = pages.filter((p) => p.trim().length >= 20).length;
-  if (pages.length > 0 && withText / pages.length < 0.2) return reply({ ok: false, code: "no_text" });
+  if (!firstPages && pages.length > 0 && withText / pages.length < 0.2) return reply({ ok: false, code: "no_text" });
   reply({ ok: true, pages });
 }
 
