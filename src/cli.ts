@@ -54,6 +54,8 @@ async function main(): Promise<void> {
     calcShape: cfg.calcShape,
     statementTool: cfg.statementTool,
     figureFallback: cfg.figureFallback,
+    readMinPages: cfg.readMinPages,
+    readSearchFirst: cfg.readSearchFirst,
     fileListFirst: cfg.fileListFirst,
     context: cfg.context,
     chat: !parsed.prompt,

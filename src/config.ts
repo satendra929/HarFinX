@@ -23,6 +23,10 @@ export interface Config {
   statementTool: boolean;
   /** FIGURE_FALLBACK: what happens to a figure that cannot be cited after the one repair: `redact` (default) removes the sentence, `warn` prints the answer and a warning line. */
   figureFallback: "redact" | "warn";
+  /** READ_MIN_PAGES (0 to 5, default 3; 0 is off): an answer built on fewer distinct pages gets one message naming the next pages the search listed (src/readcheck.ts). */
+  readMinPages: number;
+  /** READ_SEARCH_FIRST=on (default off): also ask for a search when a long answer was given with no search in the question and the conversation is about a file. Costs a second reply and a search; no measured quality gain yet. */
+  readSearchFirst: boolean;
   /** Override of the provider's reasoning-history policy (src/reasoning.ts); undefined means the profile default. */
   reasoningHistory?: "drop" | "latest" | "keep";
   /** How much of the earlier conversation the model is shown (src/contextSettings.ts). */
@@ -79,6 +83,16 @@ export function parseTemperature(raw: string | undefined): number | undefined {
   return n;
 }
 
+export const DEFAULT_READ_MIN_PAGES = 3;
+
+/** Parses READ_MIN_PAGES: a whole number from 0 (off) to 5; empty or unset means the default. */
+export function parseReadMinPages(raw: string | undefined): number {
+  const text = raw?.trim();
+  if (!text) return DEFAULT_READ_MIN_PAGES;
+  if (!/^\d+$/.test(text) || Number(text) > 5) throw new Error(`READ_MIN_PAGES must be a whole number from 0 (off) to 5 (got "${text}").`);
+  return Number(text);
+}
+
 /** `overrides.model` (the --model flag) wins over OLLAMA_MODEL; either may be a short name such as "gemma". */
 export function loadConfig(overrides: { model?: string } = {}): Config {
   let envFileFound = true;
@@ -114,6 +128,8 @@ export function loadConfig(overrides: { model?: string } = {}): Config {
     fileListFirst: env.FILE_LIST_FIRST?.trim().toLowerCase() !== "off",
     statementTool: env.STATEMENT_TOOL?.trim().toLowerCase() === "on",
     figureFallback: env.FIGURE_FALLBACK?.trim().toLowerCase() === "warn" ? "warn" : "redact",
+    readMinPages: parseReadMinPages(env.READ_MIN_PAGES),
+    readSearchFirst: env.READ_SEARCH_FIRST?.trim().toLowerCase() === "on",
     reasoningHistory,
     context: parseContextConfig(env),
     envFileFound,

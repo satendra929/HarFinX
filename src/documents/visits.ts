@@ -9,11 +9,13 @@ export class PageVisits {
   private seen = new Map<string, Map<number, PageState>>();
   private offered = new Map<string, number[]>();
   private searches = new Set<string>();
+  private names = new Map<string, string>(); // file key -> the path as the model wrote it (for messages)
 
   reset(): void {
     this.seen.clear();
     this.offered.clear();
     this.searches.clear();
+    this.names.clear();
   }
 
   /** Notes a search (file plus a normalized form of the query and section); true when this question already ran the same one. */
@@ -39,6 +41,34 @@ export class PageVisits {
     const l = this.offered.get(k) ?? [];
     for (const p of pages) if (!l.includes(p)) l.push(p);
     this.offered.set(k, l);
+    if (!this.names.has(k)) this.names.set(k, file);
+  }
+
+  /** True when a search ran in this question (even one that listed nothing). */
+  searched(): boolean {
+    return this.searches.size > 0;
+  }
+
+  /** How many distinct pages of the file were looked at in this question (opened, a part of one, or a passage: each page once). */
+  looked(file: string): number {
+    return this.seen.get(fileKey(file))?.size ?? 0;
+  }
+
+  /**
+   * Whether the question has looked at fewer than `min` distinct pages (an opened page, a part of one or a passage each count
+   * once) of the file that searches listed the most pages of, and which listed pages to open next, in rank order, to reach
+   * `min` (at most `max`). Undefined: no search listed anything, `min` is 0, or enough pages were looked at.
+   */
+  thin(min: number, max = min): { file: string; looked: number; missing: number[] } | undefined {
+    if (!(min > 0)) return undefined;
+    let best: string | undefined;
+    for (const [k, l] of this.offered) if (l.length && (best === undefined || l.length > (this.offered.get(best)?.length ?? 0))) best = k;
+    if (best === undefined) return undefined;
+    const file = this.names.get(best) ?? best;
+    const looked = this.looked(file);
+    if (looked >= min) return undefined;
+    const missing = this.pending(file, [], Math.min(min - looked, max));
+    return missing.length ? { file, looked, missing } : undefined;
   }
 
   state(file: string, page: number): PageState | undefined {

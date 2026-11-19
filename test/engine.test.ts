@@ -54,6 +54,10 @@ interface RigOptions {
   serverContext?: (modelId: string) => Promise<number | undefined>;
   /** What happens to a figure that cannot be cited after the one repair (default: redact). */
   figureFallback?: "redact" | "warn";
+  /** The read check (default 0: off, so the other tests are unchanged). */
+  readMinPages?: number;
+  /** The search-first part of the read check (default off, like the product). */
+  readSearchFirst?: boolean;
 }
 
 function rig(opts: RigOptions = {}): Rig {
@@ -88,6 +92,8 @@ function rig(opts: RigOptions = {}): Rig {
     links: false,
     ...(opts.serverContext ? { serverContext: opts.serverContext } : {}),
     ...(opts.figureFallback ? { figureFallback: opts.figureFallback } : {}),
+    ...(opts.readMinPages ? { readMinPages: opts.readMinPages } : {}),
+    ...(opts.readSearchFirst ? { readSearchFirst: true } : {}),
   });
   return { engine, faux, audit, out, err, text: () => out.join("") };
 }
@@ -493,10 +499,10 @@ test("the runaway cap follows the model chosen with /model", async () => {
 
 test("a spent file-reading budget refuses further reads (soft stop) and the answer carries a note", async () => {
   const page = (n: number) => ["Consolidated Statements of Income", "(in millions)", "Year ended December 31  |  2022  |  2021", ...Array.from({ length: 80 }, (_, i) => `Row ${n}-${i} filler text for the page  |  ${i + 1}  |  ${i + 2}`)].join("\n");
-  const r = rig({ pages: [1, 2, 3, 4, 5].map(page) });
+  const r = rig({ pages: [1, 2, 3, 4, 5, 6, 7].map(page) }); // about 3,800 characters each: the 20,000-character budget is spent after six
   let last = "";
   r.faux.setResponses([
-    ...[1, 2, 3, 4, 5].map((n) => fauxAssistantMessage([fauxToolCall("read_page", { path: "a.pdf", page: n }, { id: `r${n}` })], { stopReason: "toolUse" })),
+    ...[1, 2, 3, 4, 5, 6, 7].map((n) => fauxAssistantMessage([fauxToolCall("read_page", { path: "a.pdf", page: n }, { id: `r${n}` })], { stopReason: "toolUse" })),
     (context) => {
       last = JSON.stringify(context.messages.filter((m: any) => m.role === "toolResult").at(-1));
       return fauxAssistantMessage("I could not read more.");
@@ -808,4 +814,144 @@ test("the gate: the next question in a chat still has its first question and pag
   const msgs = r.engine.agent.state.messages as any[];
   assert.equal(msgs.filter((m) => m.role === "user" && m.harness !== "repair").length, 2); // two questions, one tagged repair message between
   assert.equal(msgs.filter((m) => m.harness === "repair").length, 1);
+});
+
+// ---- the read check (src/readcheck.ts): READ_MIN_PAGES ----
+const TOPIC_PAGES = [PAGE, "Business overview\nNet sales grew on pricing.", "Risk factors\nNet sales depend on currency.", "Outlook\nNet sales may change next year."];
+const LONG_ONE = "The company reports higher net sales this year than last year, and the filing explains that growth came from several areas.\n* Pricing improved across most product lines during the year.\n* Volume rose in the largest region while a smaller region declined.\n* Currency effects reduced the reported total somewhat.\n* Management expects similar conditions to continue next year.";
+const LONG_TWO = "The company reports higher net sales this year than last year; the pages explain why.\n* Pricing improved across most product lines during the year, which the overview page describes.\n* Currency effects reduced the reported total, as the risk page explains.\n* The outlook page says conditions may change next year, so the direction is uncertain for the company.";
+const search = fauxToolCall("search", { path: "a.pdf", query: "net sales" }, { id: "s1" });
+const readN = (n: number) => fauxToolCall("read_page", { path: "a.pdf", page: n }, { id: `r${n}` });
+
+test("read check: a long answer built on one page gets one message naming the next listed pages, then the new answer is shown", async () => {
+  const r = rig({ pages: TOPIC_PAGES, readMinPages: 3 });
+  r.faux.setResponses([
+    fauxAssistantMessage([search], { stopReason: "toolUse" }),
+    fauxAssistantMessage([readN(1)], { stopReason: "toolUse" }),
+    fauxAssistantMessage(LONG_ONE),
+    () => {
+      const last = (r.engine.agent.state.messages as any[]).filter((m) => m.role === "user").pop();
+      assert.equal(last.harness, "repair"); // the nudge is the model's latest user message
+      assert.match(last.content[0].text, /you looked at 1 page /);
+      return fauxAssistantMessage([readN(2), readN(3)], { stopReason: "toolUse" });
+    },
+    fauxAssistantMessage(LONG_TWO),
+  ]);
+  assert.equal(await r.engine.ask("Why did net sales change?"), true);
+  const nudge = find(r, "read_nudge");
+  assert.equal(nudge.length, 1);
+  assert.equal(nudge[0].data.looked, 1);
+  assert.equal(nudge[0].data.pages.length, 2);
+  const done = find(r, "read_nudge_done");
+  assert.equal(done.length, 1);
+  assert.equal(done[0].data.after, 3);
+  assert.match(r.text(), /pages explain why/); // the second answer is what is shown
+  assert.doesNotMatch(r.text(), /Management expects similar conditions/);
+  assert.equal(find(r, "answer_shown")[0].data.readNudged, true);
+  assert.equal(find(r, "answer_shown").length, 1);
+});
+
+test("read check: a short lookup answer is exempt, and so is an answer that already looked at enough pages", async () => {
+  const r = rig({ pages: TOPIC_PAGES, readMinPages: 3 });
+  r.faux.setResponses([fauxAssistantMessage([search], { stopReason: "toolUse" }), fauxAssistantMessage([readN(1)], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 32,765 in 2022.")]);
+  await r.engine.ask("What were net sales in 2022?");
+  assert.equal(find(r, "read_nudge").length, 0);
+  const r2 = rig({ pages: TOPIC_PAGES, readMinPages: 3 });
+  r2.faux.setResponses([
+    fauxAssistantMessage([search], { stopReason: "toolUse" }),
+    fauxAssistantMessage([readN(1), readN(2), readN(3)], { stopReason: "toolUse" }),
+    fauxAssistantMessage(LONG_ONE),
+  ]);
+  await r2.engine.ask("Why did net sales change?");
+  assert.equal(find(r2, "read_nudge").length, 0);
+  assert.match(r2.text(), /Management expects similar conditions/);
+});
+
+test("read check: off by default; and a conversation that has not touched a file is never sent to one", async () => {
+  const off = rig({ pages: TOPIC_PAGES });
+  off.faux.setResponses([fauxAssistantMessage([search], { stopReason: "toolUse" }), fauxAssistantMessage([readN(1)], { stopReason: "toolUse" }), fauxAssistantMessage(LONG_ONE)]);
+  await off.engine.ask("Why did net sales change?");
+  assert.equal(find(off, "read_nudge").length, 0);
+  const none = rig({ pages: TOPIC_PAGES, readMinPages: 3, readSearchFirst: true });
+  none.faux.setResponses([fauxAssistantMessage(LONG_ONE)]); // no tool, no file in this conversation: a general answer
+  await none.engine.ask("Explain what net sales mean.");
+  assert.equal(find(none, "read_nudge").length, 0);
+  const empty = rig({ pages: TOPIC_PAGES, readMinPages: 3, readSearchFirst: true });
+  empty.faux.setResponses([fauxAssistantMessage([fauxToolCall("search", { path: "a.pdf", query: "zzzz qqqq" }, { id: "z1" })], { stopReason: "toolUse" }), fauxAssistantMessage(LONG_ONE)]);
+  await empty.engine.ask("Why did net sales change?"); // a search ran and found nothing: nothing to name, and no second search is asked for
+  assert.equal(find(empty, "read_nudge").length, 0);
+});
+
+test("read check: with READ_SEARCH_FIRST off (the default) an answer with no search is left alone", async () => {
+  const r = rig({ pages: TOPIC_PAGES, readMinPages: 3 });
+  r.faux.setResponses([fauxAssistantMessage([readN(1)], { stopReason: "toolUse" }), fauxAssistantMessage(LONG_ONE)]);
+  await r.engine.ask("Why did net sales change?");
+  assert.equal(find(r, "read_nudge").length, 0);
+  assert.match(r.text(), /Management expects similar conditions/);
+});
+
+test("read check: with READ_SEARCH_FIRST on, a page read by number with no search gets a search-first message, then the new answer is shown", async () => {
+  const r = rig({ pages: TOPIC_PAGES, readMinPages: 3, readSearchFirst: true });
+  r.faux.setResponses([
+    fauxAssistantMessage([readN(1)], { stopReason: "toolUse" }),
+    fauxAssistantMessage(LONG_ONE),
+    () => {
+      const last = (r.engine.agent.state.messages as any[]).filter((m) => m.role === "user").pop();
+      assert.equal(last.harness, "repair");
+      assert.match(last.content[0].text, /you answered without searching a\.pdf/);
+      return fauxAssistantMessage([search], { stopReason: "toolUse" });
+    },
+    fauxAssistantMessage([readN(2), readN(3)], { stopReason: "toolUse" }),
+    fauxAssistantMessage(LONG_TWO),
+  ]);
+  assert.equal(await r.engine.ask("Why did net sales change?"), true);
+  const nudge = find(r, "read_nudge");
+  assert.equal(nudge.length, 1);
+  assert.equal(nudge[0].data.kind, "search");
+  assert.equal(find(r, "read_nudge_done")[0].data.after, 3);
+  assert.match(r.text(), /pages explain why/);
+});
+
+test("read check: (search-first on) a long answer with no tool in a conversation that used a file earlier gets the search-first message; a short one does not", async () => {
+  const r = rig({ pages: TOPIC_PAGES, readMinPages: 3, readSearchFirst: true });
+  r.faux.setResponses([
+    fauxAssistantMessage([search], { stopReason: "toolUse" }),
+    fauxAssistantMessage([readN(1)], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Net sales were 32,765 in 2022."),
+    fauxAssistantMessage(LONG_ONE), // second question: answered from memory
+    fauxAssistantMessage([search], { stopReason: "toolUse" }),
+    fauxAssistantMessage([readN(2), readN(3)], { stopReason: "toolUse" }),
+    fauxAssistantMessage(LONG_TWO),
+  ]);
+  await r.engine.ask("What were net sales in 2022?");
+  assert.equal(find(r, "read_nudge").length, 0); // short answer: exempt
+  await r.engine.ask("Why did net sales change?");
+  const nudge = find(r, "read_nudge");
+  assert.equal(nudge.length, 1);
+  assert.equal(nudge[0].data.kind, "search");
+  assert.equal(nudge[0].data.looked, 0); // nothing was looked at in the second question
+  r.engine.newConversation(); // /new: the next conversation has touched no file yet
+  r.faux.setResponses([fauxAssistantMessage(LONG_ONE)]);
+  await r.engine.ask("Explain what net sales mean.");
+  assert.equal(find(r, "read_nudge").length, 1);
+});
+
+test("read check: a failed second try leaves the conversation and the first answer is shown", async () => {
+  const r = rig({ pages: TOPIC_PAGES, readMinPages: 3 });
+  r.faux.setResponses([fauxAssistantMessage([search], { stopReason: "toolUse" }), fauxAssistantMessage([readN(1)], { stopReason: "toolUse" }), fauxAssistantMessage(LONG_ONE), fauxAssistantMessage([])]);
+  await r.engine.ask("Why did net sales change?");
+  assert.equal(find(r, "read_nudge").length, 1);
+  assert.equal(find(r, "read_nudge_failed").length, 1);
+  assert.match(r.text(), /Management expects similar conditions/); // the first answer
+  assert.equal((r.engine.agent.state.messages as any[]).filter((m) => m.harness === "repair").length, 0); // the nudge is not kept
+});
+
+test("read check: it asks for no more pages than the call limit leaves", async () => {
+  const r = rig({ pages: TOPIC_PAGES, readMinPages: 5 });
+  // seven calls used (search plus six reads of the same page would be repeats): use list_files calls to spend the allowance
+  const filler = (i: number) => fauxAssistantMessage([fauxToolCall("list_files", { path: "." }, { id: `f${i}` })], { stopReason: "toolUse" });
+  r.faux.setResponses([fauxAssistantMessage([search], { stopReason: "toolUse" }), fauxAssistantMessage([readN(1)], { stopReason: "toolUse" }), filler(1), filler(2), filler(3), filler(4), filler(5), fauxAssistantMessage(LONG_ONE), fauxAssistantMessage([readN(2)], { stopReason: "toolUse" }), fauxAssistantMessage(LONG_TWO)]);
+  await r.engine.ask("Why did net sales change?");
+  const nudge = find(r, "read_nudge");
+  if (nudge.length) assert.ok(nudge[0].data.pages.length <= 1, "at most the one call that was left"); // 7 of 8 calls were used
 });

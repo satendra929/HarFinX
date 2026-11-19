@@ -34,7 +34,7 @@ export const MAX_FREE_REPEATS = 2;
 
 // Sized for an 8k-token window (numbers tokenise at ~2-3 chars/token). The default window is 16k, so these are tighter than
 // they need to be there; they do not yet scale with the window.
-export const DEFAULT_LIMITS = { maxCallsPerRun: 8, maxOutputChars: 5_000, maxTotalChars: 12_000 };
+export const DEFAULT_LIMITS = { maxCallsPerRun: 8, maxOutputChars: 5_000, maxTotalChars: 20_000 }; // 2026-11-19: total was 12,000; three pages (about 4,000 characters each) plus the outline and a search need more
 
 // Model-controlled text must not reach the terminal raw (ANSI escapes etc.).
 export function safeForLog(value: unknown, max = 200): string {

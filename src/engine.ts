@@ -29,6 +29,7 @@ import { createPrinter } from "./printer.ts";
 import { answerTextSince, summarizeCheck } from "./check.ts";
 import { gateText, LEFT_OUT_LINE, redactUncited, repairMessage, untracedWarning, WITHHELD_LINE } from "./gate.ts";
 import { answerShape } from "./shape.ts";
+import { isShortAnswer, readMessage, searchMessage } from "./readcheck.ts";
 import { classifyReply, finalAnswerText, ReplyHold } from "./hold.ts";
 import { createDocStore, type DocStore } from "./documents/store.ts";
 import { readPageTool } from "./tools/readPage.ts";
@@ -43,6 +44,8 @@ import { describeContext, makeContextView, trimLine } from "./context.ts";
 import { CONTEXT_MODES, resolveContext, type ContextMode } from "./contextSettings.ts";
 import { contextMismatchWarning } from "./ollamaContext.ts";
 import { budgetNote, callLimitMessage, emptyAnswerHint, loopMessage, oneLine, outlineResultLine, searchResultLine, toolLine } from "./feedback.ts";
+
+const FILE_TOOLS = new Set(["outline", "search", "read_page", "read_file", "get_line_item"]);
 
 export const SYSTEM_PROMPT =
   "You are HarFinX, a careful assistant for financial analysts. " +
@@ -111,6 +114,10 @@ export interface EngineOptions {
   figureFallback?: "redact" | "warn";
   /** The get_line_item tool and its prompt sentence (default off; STATEMENT_TOOL=on in .env or the environment). */
   statementTool?: boolean;
+  /** The read check (src/readcheck.ts): an answer built on fewer distinct pages than this gets one message naming the next listed pages before it is shown. 0 (default here) is off; READ_MIN_PAGES sets it in the CLI. */
+  readMinPages?: number;
+  /** The read check also covers an answer given with no search at all (default off; READ_SEARCH_FIRST=on): the model is asked to search first. */
+  readSearchFirst?: boolean;
   /** Extra fields for the session_start record (harness version, node, provider, workspace, ...). */
   sessionStart?: Record<string, unknown>;
 }
@@ -242,6 +249,7 @@ export function createEngine(opts: EngineOptions): Engine {
   }
   const docs = opts.docs ?? createDocStore(workspace);
   let listingSent = false; // the file list goes with the first question of a conversation only
+  let lastFile: string | undefined; // the file the model last searched or read in this conversation (the read check names it)
   const visits = new PageVisits(); // pages opened and listed during the current question
   const tools = [
     ...(opts.filesEnabled
@@ -363,8 +371,11 @@ export function createEngine(opts: EngineOptions): Engine {
         }
       }
     }
-    if (e.type === "tool_execution_start") record("tool_start", { toolCallId: e.toolCallId, tool: e.toolName, args: e.args });
-    else if (e.type === "tool_execution_end") {
+    if (e.type === "tool_execution_start") {
+      record("tool_start", { toolCallId: e.toolCallId, tool: e.toolName, args: e.args });
+      const path = (e.args as { path?: unknown } | undefined)?.path;
+      if (typeof path === "string" && path && FILE_TOOLS.has(e.toolName)) lastFile = path; // the file this conversation is about (for the read check)
+    } else if (e.type === "tool_execution_end") {
       record("tool_end", { toolCallId: e.toolCallId, tool: e.toolName, isError: e.isError, durationMs: e.durationMs });
     }
 
@@ -427,6 +438,53 @@ export function createEngine(opts: EngineOptions): Engine {
       record("gate_decision", { stage, figures: f.length, untraced: f.slice(0, 10).map((x) => ({ figure: x.raw, reason: x.reason })), halted });
       return f;
     };
+    // The read check (src/readcheck.ts): an answer built on fewer pages than READ_MIN_PAGES gets ONE message naming the next
+    // listed pages, before the figure gate looks at it. A second try that fails leaves the conversation; the first answer stands.
+    let readNudged = false;
+    const minPages = opts.readMinPages ?? 0;
+    if (minPages > 0 && !halted && !auditError && !userAborted && !guard.blocked && answer.trim() && !isShortAnswer(answerShape(answer))) {
+      const room = DEFAULT_LIMITS.maxCallsPerRun - guard.calls; // the nudge may not push the question past its call limit
+      // A search listed pages that were not opened: name them. No search ran at all (the model read a page by number, or answered
+      // from the conversation) and the conversation is about a file: ask for a search first (it needs a call for the search and one to read).
+      const thin = room > 0 ? visits.thin(minPages, room) : undefined;
+      const looked = lastFile ? visits.looked(lastFile) : 0;
+      const searchFirst = opts.readSearchFirst === true && !thin && !visits.searched() && lastFile !== undefined && room >= 2 && looked < minPages ? { file: lastFile, looked } : undefined;
+      const target = thin ?? searchFirst;
+      if (target) {
+        const snapshot = agent.state.messages.slice();
+        const message = thin ? readMessage(thin.file, thin.looked, thin.missing) : searchMessage(searchFirst!.file, searchFirst!.looked, minPages);
+        const nudge = { role: "user", content: [{ type: "text", text: message }], timestamp: Date.now(), harness: "repair" } as any; // stays inside its question, like the figure repair
+        record("read_nudge", { kind: thin ? "pages" : "search", looked: target.looked, pages: thin?.missing ?? [], text: message });
+        record("message", { message: nudge });
+        pendingAnswer = "";
+        hold.take();
+        runawayReason = undefined;
+        repairing = true;
+        let failure: string | undefined;
+        try {
+          await agent.prompt(nudge);
+        } catch (err) {
+          failure = `the second try failed: ${err instanceof Error ? err.message : String(err)}`;
+        } finally {
+          repairing = false;
+        }
+        const loop = runawayReason;
+        runawayReason = undefined;
+        hold.take();
+        if (userAborted || auditError) return; // the user stopped it (or the log failed): nothing more is shown
+        failure ??= loop ? `a loop in the second try (${loop})` : guard.tripped ? "the call limit in the second try" : agent.state.errorMessage ? "an error in the second try" : !pendingAnswer.trim() ? "no answer text in the second try" : undefined;
+        if (failure) {
+          record("read_nudge_failed", { reason: failure });
+          agent.state.messages = snapshot; // the nudge and its replies leave the conversation: the question keeps its first answer
+          pendingAnswer = "";
+        } else {
+          answer = pendingAnswer;
+          pendingAnswer = "";
+          readNudged = true;
+          record("read_nudge_done", { kind: thin ? "pages" : "search", before: target.looked, after: visits.looked(thin?.file ?? searchFirst!.file), requested: thin?.missing ?? [], searched: visits.searched() });
+        }
+      }
+    }
     failing = look("first", answer);
     if (failing.length && !halted && !auditError) {
       const snapshot = agent.state.messages.slice();
@@ -483,7 +541,7 @@ export function createEngine(opts: EngineOptions): Engine {
       emitModelText(text, "answer");
       if (removed && !firstRemoved) out.note(dim(LEFT_OUT_LINE));
     }
-    record("answer_shown", { text, repaired: answer !== first, redacted: removed, withheld });
+    record("answer_shown", { text, repaired: answer !== first, readNudged, redacted: removed, withheld });
   }
 
   // Sends one prompt, streams the reply, reports errors (prompt() does not throw on model errors).
@@ -730,6 +788,7 @@ export function createEngine(opts: EngineOptions): Engine {
       return true;
     },
     newConversation() {
+      lastFile = undefined;
       listingSent = false;
       calcCalls = 0;
       agent.reset();

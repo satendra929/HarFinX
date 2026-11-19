@@ -9,14 +9,14 @@ test("prompt size is the input plus the cached and cache-written parts; missing 
   assert.equal(promptTokens(undefined), 0);
 });
 
-test("no warning below 80% of the window; a warning at and above it, naming both numbers", () => {
-  assert.equal(NEAR_LIMIT, 0.8);
-  assert.equal(contextWarning({ input: 6553 }, 8192), undefined); // just under 6553.6
-  const w = contextWarning({ input: 6554 }, 8192)!;
-  assert.equal(w.used, 6554);
+test("no warning below 95% of the window; a warning at and above it, naming both numbers", () => {
+  assert.equal(NEAR_LIMIT, 0.95);
+  assert.equal(contextWarning({ input: 7782 }, 8192), undefined); // just under 7782.4
+  const w = contextWarning({ input: 7783 }, 8192)!;
+  assert.equal(w.used, 7783);
   assert.equal(w.window, 8192);
-  assert.match(w.text, /^\[context\] this step's prompt used 6554 of 8192 tokens\./);
-  assert.ok(contextWarning({ input: 3000, cacheRead: 4000 }, 8192)); // cached tokens count
+  assert.match(w.text, /^\[context\] this step's prompt used 7783 of 8192 tokens\./);
+  assert.ok(contextWarning({ input: 3000, cacheRead: 5000 }, 8192)); // cached tokens count
   assert.ok(contextWarning({ input: 9000 }, 8192)); // over the window
 });
 
@@ -36,11 +36,11 @@ test("contextMeter: how full the conversation is after a question (last prompt p
 });
 
 test("contextMeter: near the limit it says so, and in chat mode names the way out", () => {
-  const near = contextMeter({ input: 13_200 }, 16384)!; // 80.6%
+  const near = contextMeter({ input: 15_600 }, 16384)!; // 95.2%
   assert.equal(near.high, true);
-  assert.equal(near.text, "context 81%: near the limit");
-  assert.equal(contextMeter({ input: 13_200 }, 16384, true)!.text, "context 81%: near the limit; /new starts a fresh conversation");
-  assert.equal(contextMeter({ input: 13_100 }, 16384)!.high, false); // 79.96%: under the same 80% line the warning uses
+  assert.equal(near.text, "context 95%: near the limit");
+  assert.equal(contextMeter({ input: 15_600 }, 16384, true)!.text, "context 95%: near the limit; /new starts a fresh conversation");
+  assert.equal(contextMeter({ input: 15_500 }, 16384)!.high, false); // 94.6%: under the same 95% line the warning uses
   assert.ok(contextMeter({ input: 20_000 }, 16384)!.percent >= 100); // over the window is shown, not hidden
   assert.equal(contextMeter({ input: 10_000_000 }, 16384)!.percent, 999); // capped so the line stays short
 });

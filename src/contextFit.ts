@@ -2,7 +2,7 @@
 // fit without saying so, and the oldest text, which can include instructions, is what goes. Reports only; changes nothing.
 
 /** Share of the window at which a prompt counts as "near the limit". */
-export const NEAR_LIMIT = 0.8;
+export const NEAR_LIMIT = 0.95; // owner, 2026-11-19: was 0.8 (reading three pages per question uses about 65% of a 16k window)
 
 export interface TokenUsage {
   input?: number;
