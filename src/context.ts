@@ -91,7 +91,8 @@ function split(messages: readonly Msg[]): { leading: Msg[]; groups: Group[] } {
   if (first < 0) return { leading: [...messages], groups: [] };
   const groups: Group[] = [];
   for (let i = first; i < messages.length; i++) {
-    if (messages[i]?.role === "user") groups.push({ at: i, msgs: [messages[i]] });
+    // a message the harness sent inside the question (the figure repair, tagged) belongs to the question: it never starts one
+    if (messages[i]?.role === "user" && (messages[i] as { harness?: string }).harness !== "repair") groups.push({ at: i, msgs: [messages[i]] });
     else groups[groups.length - 1].msgs.push(messages[i]);
   }
   return { leading: messages.slice(0, first), groups };

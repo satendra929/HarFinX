@@ -70,3 +70,13 @@ test("the live check agrees with the checker the offline report uses", () => {
   assert.equal(live.counts.X, offline.filter((c) => c.cls === "X").length);
   assert.deepEqual(live.unverified.map((u) => u.raw), ["7,777"]);
 });
+
+test("answerTextSince: a repair message sent inside the question does not start a new one", () => {
+  const messages = [
+    { role: "user", content: "q" },
+    { role: "assistant", content: [{ type: "text", text: "draft" }] },
+    { role: "user", content: "fix", harness: "repair" },
+    { role: "assistant", content: [{ type: "text", text: "repaired" }] },
+  ];
+  assert.equal(answerTextSince(messages), "draft\nrepaired");
+});

@@ -15,7 +15,8 @@ import type { AuditLog } from "./audit.ts";
 import { readFileTool } from "./tools/readFile.ts";
 import { calcOf, calculateTool } from "./tools/calculate.ts";
 import { Ledger, checkText, extractNumbers, normalise, type SourceMeta } from "./provenance.ts";
-import { buildSources, DEFAULT_SOURCE_LIMITS, formatSources, sourcesForAudit } from "./sources.ts";
+import { DEFAULT_SOURCE_LIMITS, sourcesForAudit } from "./sources.ts";
+import { buildCitationList, citationsForAudit } from "./cite.ts";
 import { shownOf } from "./shown.ts";
 import { periodUnitsCheck, tokensOf } from "./periodUnits.ts";
 import { LineMarker, RefNumbers, markLine } from "./refs.ts";
@@ -25,8 +26,10 @@ import type { ReasoningProfile } from "./reasoning.ts";
 import { REPLY_CHARS_PER_CAP_TOKEN, guardRunaway } from "./runaway.ts";
 import { friendlyError } from "./errors.ts";
 import { createPrinter } from "./printer.ts";
-import { answerTextSince, checkLine, summarizeCheck } from "./check.ts";
+import { answerTextSince, summarizeCheck } from "./check.ts";
+import { gateText, LEFT_OUT_LINE, redactUncited, repairMessage, untracedWarning, WITHHELD_LINE } from "./gate.ts";
 import { answerShape } from "./shape.ts";
+import { classifyReply, finalAnswerText, ReplyHold } from "./hold.ts";
 import { createDocStore, type DocStore } from "./documents/store.ts";
 import { readPageTool } from "./tools/readPage.ts";
 import { searchTool } from "./tools/search.ts";
@@ -57,6 +60,7 @@ export const SYSTEM_PROMPT =
   "For a PDF (a filing or report), find the page with search (use words printed in the filing, such as row labels or statement names), then read it with read_page: a page number counts the Nth page of the file and can differ from the number printed on the page, and tables come as rows with | between cells. To read only the lines around some words on a page, pass find to read_page. A row marked [no label in the file] has figures but no row name in the PDF: do not guess what it is: use it only when the rows around it make clear what it is, and say so. " +
   "Give a change or a rate with its direction (an increase or a decrease), taken from the calculator's signed result; if a measure does not apply to this kind of company, say so instead of computing it. When the question asks for several items (all segments, every program), cover each one the page shows. Never do arithmetic yourself: every figure you state that is not copied exactly from a file or from the user's message must come from the calculate tool. " +
   "Copy source numbers exactly as printed into its inputs, let it do all calculations and unit conversions, and quote its shown values exactly. " +
+  "The harness shows only figures that you copied exactly from a page you opened or that the calculate tool returned; any other figure is taken out of your answer before the user sees it. Do not write a calculation out, and do not convert units or round a number yourself: call calculate. " +
   "If a number you need is not in the file, ask the user for it.";
 
 /** Added to the system prompt when the statement tool is on: the structured lookup first, the search as the fallback. */
@@ -103,6 +107,8 @@ export interface EngineOptions {
   serverContext?: (modelId: string) => Promise<number | undefined>;
   /** Put the workspace's file list in the first message of a conversation when it has at most FILE_LIST_MAX files (default on). */
   fileListFirst?: boolean;
+  /** What happens to a figure that cannot be cited after the one repair: `redact` (default) leaves its sentence out, `warn` shows the answer with a warning line. */
+  figureFallback?: "redact" | "warn";
   /** The get_line_item tool and its prompt sentence (default off; STATEMENT_TOOL=on in .env or the environment). */
   statementTool?: boolean;
   /** Extra fields for the session_start record (harness version, node, provider, workspace, ...). */
@@ -177,7 +183,54 @@ export function createEngine(opts: EngineOptions): Engine {
   // The answer streams a line at a time, with a dim [S1] after each figure read from a page (src/refs.ts); the numbered
   // list under the answer is built from the same numbers. Model text is made terminal-safe BEFORE a mark is added.
   const refs = new RefNumbers(DEFAULT_SOURCE_LIMITS.entries);
-  const lines = new LineMarker((line) => markLine(cleanForTerminal(line), ledger, refs, dim), cleanForTerminal);
+  let currentQuestion = ""; // the user's words of the question being answered: the row choice falls back to them when a sentence names nothing
+  const lines = new LineMarker((line) => markLine(cleanForTerminal(line), ledger, refs, dim, currentQuestion), cleanForTerminal);
+  // The text of a reply is held until the reply ends (src/hold.ts). A reply that ends in a tool call is working text and
+  // is never shown (the audit log keeps it); an answer is printed whole, and every route that prints model text goes
+  // through emitModelText, so one place decides what reaches the screen.
+  const hold = new ReplyHold();
+  let lastWorking = ""; // the text of the last reply that ended in a tool call, for a question that ends before any answer
+  let printedText = false; // answer or partial text was printed this question
+  let printedAny = false; // anything the model wrote (including its reasoning shown as a last resort) was printed this question
+  let writingShown = false; // the "writing..." line was printed for the current reply
+  const fallbackMode = opts.figureFallback ?? "redact";
+  let pendingAnswer = ""; // the last answer reply, held until the gate has looked at it (src/gate.ts)
+  let settled = false; // an answer was gated and shown (or withheld) this question
+  let repairing = false; // the second try is running: a cut-off reply of it is not shown (the first answer stands)
+  let repairFailure: string | undefined; // why the second try gave nothing usable: the question's outcome ignores what went wrong in it
+  let warnFailing: ReturnType<typeof gateText> = []; // figures still uncited in an answer shown in `warn` mode
+  type EmitKind = "answer" | "partial" | "reasoning";
+  // Text that is not a gated answer (a cut-off reply, looped text, reasoning shown as a last resort) loses its uncited sentences too,
+  // so no uncited figure reaches the screen on any path (in `warn` mode it is shown as it is).
+  function scrub(text: string): { text: string; removed: number } {
+    if (fallbackMode !== "redact" || !text.trim()) return { text, removed: 0 };
+    try {
+      const r = redactUncited(text, ledger, currentQuestion);
+      if (r.removed) record("gate_redacted", { kind: "partial", removed: r.removed, withheld: r.withheld });
+      return { text: r.text, removed: r.removed };
+    } catch (err) {
+      record("gate_error", { stage: "scrub", error: err instanceof Error ? err.message : String(err) });
+      return { text: "", removed: 0 }; // never show text the gate could not look at
+    }
+  }
+  function emitModelText(text: string, kind: EmitKind): void {
+    const s = kind === "answer" ? { text, removed: 0 } : scrub(text); // an answer was gated before this call
+    if (kind === "reasoning") {
+      if (s.text.trim()) {
+        out.line(cleanForTerminal(s.text)); // raw reasoning, a last resort: no marks
+        printedAny = true;
+      }
+      if (s.removed) out.note(dim(LEFT_OUT_LINE));
+      return;
+    }
+    if (s.text) out.text(lines.push(s.text));
+    out.text(lines.flush(kind === "answer")); // the waiting tail: marked when the answer ended, plain when it was cut off
+    if (s.text.trim()) {
+      printedText = true;
+      printedAny = true;
+    }
+    if (s.removed) out.note(dim(LEFT_OUT_LINE));
+  }
   // What the model was shown goes to the ledger. A failure here must not fail the tool call that showed it: it is
   // written to the audit log and the figures of that text simply stay untraced (the [check] line will say so).
   function feedLedger(label: string, text: string, meta: SourceMeta): void {
@@ -247,6 +300,7 @@ export function createEngine(opts: EngineOptions): Engine {
   // they reconstruct the exact context of every model call.
   let contextWarned = false; // one context warning per question
   let calcInputs: string[] = []; // the printed numbers given to the calculator during this question
+  let calcCalls = 0; // calculate calls in this chat (the ledger spans the chat), so a calculation's id is never reused
   guard.attach(agent); // counts replies and tool calls and aborts a stopped question; subscribed first, so the listener below sees `tripped` already set
   // Timing of each model reply, for the audit record (speed work needs to see first-token time apart from total time).
   let replyStart = 0;
@@ -268,9 +322,22 @@ export function createEngine(opts: EngineOptions): Engine {
       replyStart = performance.now(); // the request goes out now: time to first token includes the server reading the prompt
       firstToken = undefined;
     } else if (e.type === "message_update" && firstToken === undefined && e.assistantMessageEvent.type !== "start") firstToken = performance.now(); // "start" is the stream opening, not a token
-    // The end of a reply: its last line is whole now (a cut-off reply shows its tail as it is). First, so nothing printed below lands in the middle of the text.
-    if (e.type === "message_end" && e.message.role === "assistant") out.text(lines.flush(e.message.stopReason !== "aborted" && e.message.stopReason !== "error"));
+    if (e.type === "message_start" && e.message.role === "assistant") writingShown = false; // a new reply: the held text is NOT reset here (only taking it empties it)
+    // The end of a reply (src/hold.ts): an answer is printed whole, a cut-off reply shows what it had as it is, and a reply
+    // that ends in a tool call is working text: not shown, kept in the audit log. First, so nothing printed below lands in the middle of the text.
+    let disposition: { kind: string; chars: number } | undefined;
+    if (e.type === "message_end" && e.message.role === "assistant") {
+      const kind = classifyReply(e.message as any);
+      const held = hold.take();
+      disposition = { kind, chars: held.length };
+      if (kind === "working") {
+        if (held.trim()) lastWorking = held;
+      } else if (kind === "answer") {
+        if (held.trim()) pendingAnswer = held; // shown after the gate (settleAnswer)
+      } else if (!repairing) emitModelText(held, "partial");
+    }
     if (e.type === "message_end" && e.message.role !== "user") record("message", e.message.role === "assistant" ? { message: e.message, timing: replyTiming(e.message.content as any) } : { message: e.message }); // user text is in run_start
+    if (disposition) record("reply_disposition", disposition);
     if (e.type === "message_end" && e.message.role === "assistant" && !contextWarned) {
       const w = contextWarning(e.message.usage, agent.state.model.contextWindow);
       if (w) {
@@ -286,9 +353,10 @@ export function createEngine(opts: EngineOptions): Engine {
       if (e.toolName === "calculate") {
         const calc = calcOf(e.result);
         calcInputs.push(...calc.inputs);
+        const call = ++calcCalls;
         for (const s of calc.steps) {
           try {
-            ledger.addCalc(s.name, s.value, s.shown, s.pct);
+            ledger.addCalc(s.name, s.value, s.shown, s.pct, { call, expr: s.expr, inputs: calc.named, literals: s.literals, calls: s.calls });
           } catch (err) {
             record("ledger_feed_error", { label: `calculate ${s.name}`, error: err instanceof Error ? err.message : String(err) });
           }
@@ -313,7 +381,14 @@ export function createEngine(opts: EngineOptions): Engine {
     if (e.type !== "message_update") return;
     const ev = e.assistantMessageEvent;
     if (ev.type === "thinking_start") out.line(dim("thinking…"));
-    else if (ev.type === "text_delta") out.text(lines.push(ev.delta));
+    else if (ev.type === "text_delta") {
+      // The text waits for the end of the reply; a short status line says something is being written (once per reply).
+      if (!writingShown && ev.delta.trim()) {
+        writingShown = true;
+        out.line(dim("writing…"));
+      }
+      hold.push(ev.delta);
+    }
   });
 
   // A single reply that loops (dozens of tool calls, the same call over and over, or text/reasoning far beyond the
@@ -326,10 +401,90 @@ export function createEngine(opts: EngineOptions): Engine {
     (reason) => {
       runawayReason = reason;
       record("runaway", { reason });
-      out.note(dim(`[stopped] ${reason}`)); // the text that looped is shown before the stop line
+      const looped = hold.take();
+      if (repairing) return; // the second try is quiet: the first answer stands (settleAnswer)
+      if (looped) emitModelText(looped, "partial"); // the text that looped is shown before the stop line
+      out.note(dim(`[stopped] ${reason}`));
     },
     () => (model.maxTokens > 0 ? model.maxTokens * REPLY_CHARS_PER_CAP_TOKEN : Infinity), // the current model's cap: /model changes it
   );
+
+  // The figure gate (src/gate.ts). The held answer is looked at before anything is printed: when a figure cannot be cited the
+  // model gets one fixed message (inside the same question) and answers again; whatever still cannot be cited is left out of
+  // what is shown (or, with FIGURE_FALLBACK=warn, reported in a warning line). A second try that gives nothing usable is
+  // dropped from the conversation and the first answer stands.
+  async function settleAnswer(first: string, halted: boolean): Promise<void> {
+    let answer = first;
+    let failing: ReturnType<typeof gateText> = [];
+    const look = (stage: string, text: string): ReturnType<typeof gateText> => {
+      let f: ReturnType<typeof gateText> = [];
+      try {
+        f = gateText(text, ledger, currentQuestion);
+      } catch (err) {
+        record("gate_error", { stage, error: err instanceof Error ? err.message : String(err) });
+        f = [{ raw: "?", sentence: "", reason: "the gate could not look at this answer" }]; // never show text the gate could not look at
+      }
+      record("gate_decision", { stage, figures: f.length, untraced: f.slice(0, 10).map((x) => ({ figure: x.raw, reason: x.reason })), halted });
+      return f;
+    };
+    failing = look("first", answer);
+    if (failing.length && !halted && !auditError) {
+      const snapshot = agent.state.messages.slice();
+      const message = repairMessage(failing, !guard.blocked); // a page read would be refused once the reading budget is spent
+      const repairMsg = { role: "user", content: [{ type: "text", text: message }], timestamp: Date.now(), harness: "repair" } as any;
+      record("gate_repair", { figures: failing.length, text: message });
+      record("message", { message: repairMsg });
+      pendingAnswer = "";
+      hold.take();
+      runawayReason = undefined;
+      repairing = true;
+      try {
+        await agent.prompt(repairMsg);
+      } catch (err) {
+        repairFailure = `the second try failed: ${err instanceof Error ? err.message : String(err)}`;
+      } finally {
+        repairing = false;
+      }
+      const loop = runawayReason;
+      runawayReason = undefined;
+      hold.take();
+      if (userAborted || auditError) return; // the user stopped it (or the log failed): nothing more is shown
+      const bad = repairFailure ?? (loop ? `a loop in the second try (${loop})` : guard.tripped ? "the call limit in the second try" : agent.state.errorMessage ? "an error in the second try" : !pendingAnswer.trim() ? "no answer text in the second try" : undefined);
+      if (bad) {
+        repairFailure = bad;
+        record("gate_repair_failed", { reason: bad });
+        agent.state.messages = snapshot; // the repair and its replies leave the conversation: the question keeps its first answer
+        pendingAnswer = "";
+      } else {
+        answer = pendingAnswer;
+        pendingAnswer = "";
+        failing = look("repaired", answer);
+      }
+    }
+    settled = true;
+    let text = answer;
+    let removed = 0;
+    let firstRemoved = false;
+    let withheld = false;
+    if (failing.length && fallbackMode === "redact") {
+      const r = redactUncited(answer, ledger, currentQuestion);
+      text = r.text;
+      removed = r.removed;
+      firstRemoved = r.firstRemoved;
+      withheld = r.withheld || (r.removed === 0 && failing.some((f) => f.raw === "?")); // an answer the gate could not look at is not shown
+      if (withheld) text = "";
+      record("gate_redacted", { kind: "answer", removed, withheld, figures: failing.length });
+    } else if (failing.length) warnFailing = failing;
+    if (withheld) {
+      out.note(dim(WITHHELD_LINE));
+      printedAny = true;
+    } else {
+      if (removed && firstRemoved) out.note(dim(LEFT_OUT_LINE)); // the first sentence is gone: the line says so above what is left
+      emitModelText(text, "answer");
+      if (removed && !firstRemoved) out.note(dim(LEFT_OUT_LINE));
+    }
+    record("answer_shown", { text, repaired: answer !== first, redacted: removed, withheld });
+  }
 
   // Sends one prompt, streams the reply, reports errors (prompt() does not throw on model errors).
   async function ask(text: string): Promise<boolean> {
@@ -338,11 +493,22 @@ export function createEngine(opts: EngineOptions): Engine {
     refs.reset();
     visits.reset();
     lines.flush(false); // nothing is left over from an earlier question
+    hold.take();
+    lastWorking = "";
+    printedText = false;
+    printedAny = false;
+    writingShown = false;
+    pendingAnswer = "";
+    settled = false;
+    repairing = false;
+    repairFailure = undefined;
+    warnFailing = [];
     out.begin();
     calcInputs = [];
     contextWarned = false;
     userAborted = false;
     runawayReason = undefined;
+    currentQuestion = text;
     ledger.addUser(text);
     record("run_start", { text });
     // A small workspace's file list goes with the first question, so the model does not spend a reply on list_files.
@@ -378,10 +544,22 @@ export function createEngine(opts: EngineOptions): Engine {
       canSwitchThinkingOff: !!reasoning.thinkingOff,
       record,
       say: (line) => out.note(dim(line)),
-      showReasoning: (t) => out.line(cleanForTerminal(t)),
+      showReasoning: (t) => emitModelText(t, "reasoning"),
       noAnswerHint: () => emptyAnswerHint(guard.calls, DEFAULT_LIMITS.maxCallsPerRun),
     });
-    out.end(); // a reply that ended without its last event (a failed stream): its text is shown as it is
+    // A reply that ended without its last event (a failed stream): the text held so far is shown as it is.
+    const leftover = hold.take();
+    if (leftover.trim()) emitModelText(leftover, "partial");
+    // The held answer goes through the figure gate (one repair at most), then it is shown.
+    const haltedBeforeGate = userAborted || !!auditError || !!guard.tripped || !!stuck || !!agent.state.errorMessage;
+    if (pendingAnswer.trim()) await settleAnswer(pendingAnswer, haltedBeforeGate);
+    // A question that ended before any answer (a hard stop, an error) still shows the last text the model wrote, once, so the
+    // user is not left with nothing where text used to be; it counts as an incomplete answer below.
+    if (!printedAny && !settled && lastWorking.trim()) emitModelText(lastWorking, "partial");
+    out.end();
+    // Past this point what went wrong inside the second try (a loop, the call limit, an error) is not the question's outcome.
+    const tripped = repairFailure ? undefined : guard.tripped;
+    const failed = repairFailure ? undefined : agent.state.errorMessage;
     // The lines under an answer (check, sources, notes, meter) start after one blank line.
     let footerOpen = false;
     const foot = (line: string): void => {
@@ -392,7 +570,7 @@ export function createEngine(opts: EngineOptions): Engine {
 
     // Once per model: ask the model server which window it really loaded. If it differs from the assumed one, warn
     // and use the server's figure from here on (src/ollamaContext.ts). A failure here never affects the answer.
-    if (opts.serverContext && !serverContextChecked && !userAborted && !auditError && !agent.state.errorMessage) {
+    if (opts.serverContext && !serverContextChecked && !userAborted && !auditError && !failed) {
       serverContextChecked = true;
       const actual = await opts.serverContext(modelId);
       const warning = contextMismatchWarning(agent.state.model.contextWindow, actual, modelId);
@@ -406,7 +584,7 @@ export function createEngine(opts: EngineOptions): Engine {
     // How long and how structured the answer was (src/shape.ts): counts for the audit log only; never shown and never acted on.
     if (!auditError) {
       try {
-        const shown = answerTextSince(agent.state.messages);
+        const shown = finalAnswerText(agent.state.messages); // the answer as shown: drafts in tool-call replies are not part of it
         if (shown.trim()) record("answer_shape", { ...answerShape(shown) });
       } catch (err) {
         record("answer_shape_error", { error: err instanceof Error ? err.message : String(err) });
@@ -414,14 +592,17 @@ export function createEngine(opts: EngineOptions): Engine {
     }
 
     // Live figure check (src/check.ts): warn-only. It never changes the answer, and a failure here never stops one.
-    if (!userAborted && !guard.tripped && !auditError && !stuck && !agent.state.errorMessage) {
+    if (!userAborted && !tripped && !auditError && !stuck && !failed) {
       let checked: ReturnType<typeof checkText> | undefined;
       try {
+        // The `provenance` event keeps its input (all assistant text of the question) so runs stay comparable; the `figure_gate`
+        // event and the [check] line judge only the answer the user was shown (drafts in tool-call replies are left out).
         checked = checkText(answerTextSince(agent.state.messages), ledger);
         const summary = summarizeCheck(checked);
         record("provenance", { figures: summary.figures, counts: summary.counts, unverified: summary.unverified.slice(0, 20) });
-        const line = checkLine(summary);
-        if (line) foot(line.warn ? warnLine(line.text) : dim(line.text));
+        const gate = summarizeCheck(checkText(finalAnswerText(agent.state.messages), ledger));
+        record("figure_gate", { figures: gate.figures, counts: gate.counts, untraced: gate.unverified.slice(0, 20), basis: "answer text as shown" });
+        if (warnFailing.length) foot(warnLine(untracedWarning(warnFailing))); // FIGURE_FALLBACK=warn: the answer was shown with its uncited figures
       } catch (err) {
         record("provenance_error", { error: err instanceof Error ? err.message : String(err) });
         foot(dim("[check] could not run for this answer"));
@@ -431,14 +612,13 @@ export function createEngine(opts: EngineOptions): Engine {
       // never hides the [check] line above and never changes the answer.
       if (checked) {
         try {
-          const inputs = calcInputs.flatMap((lit) => extractNumbers(normalise(lit)));
-          // The figures are the ones the marks were made from (refs.seen), so the list and the marks cannot disagree.
-          const sources = buildSources(refs.seen, inputs, ledger, refs.order);
-          const listLines = formatSources(sources, { link: opts.links ? pageLink : undefined });
-          if (listLines.length) {
-            record("sources", { marked: refs.order.length, entries: sourcesForAudit(sources), notListed: sources.many.length, moreEntries: sources.moreEntries });
-            for (const l of listLines) foot(dim(l));
+          // The list is built from the decisions the marks were made from, so the list and the marks cannot disagree.
+          const list = buildCitationList(refs.decisions, refs.order, ledger, opts.links ? pageLink : undefined);
+          if (list.lines.length) {
+            record("sources", { marked: refs.order.length, entries: sourcesForAudit(list.sources), calculations: list.calcEntries.map((c) => ({ ref: c.ref, step: c.step.name, inputsFrom: c.inputsFrom })), notListed: list.sources.many.length, moreEntries: list.sources.moreEntries });
+            for (const l of list.lines) foot(dim(l));
           }
+          if (refs.decisions.length) record("citations", { figures: citationsForAudit(refs.decisions) });
         } catch (err) {
           record("sources_error", { error: err instanceof Error ? err.message : String(err) });
           foot(dim("[sources] could not be built for this answer"));
@@ -451,16 +631,16 @@ export function createEngine(opts: EngineOptions): Engine {
           record("period_units_error", { error: err instanceof Error ? err.message : String(err) });
         }
       }
-    } else if (!auditError && answerTextSince(agent.state.messages).trim()) {
+    } else if (!auditError && printedText) {
       // The answer was cut short (Ctrl+C, a limit, a loop or an error): some text was shown, so say that it was not checked.
-      foot(dim("[check] not run: the answer is incomplete"));
+      foot(dim("[the answer is incomplete]"));
     }
 
     // The last lines of an answer: a note when the file-reading budget ran out, and how full the conversation is.
     // Own try: these never change the answer or the exit code.
     if (!userAborted && !auditError) {
       try {
-        if (guard.blocked && !guard.tripped) {
+        if (guard.blocked && !tripped) {
           record("budget_note", { reason: guard.blocked });
           foot(warnLine(budgetNote(guard.blocked)));
         }
@@ -475,19 +655,19 @@ export function createEngine(opts: EngineOptions): Engine {
     }
 
     let outcome: "ok" | "error" | "aborted" | "guard_tripped" | "runaway" = "ok";
-    const err = agent.state.errorMessage;
-    if (guard.tripped) outcome = "guard_tripped";
+    const err = failed;
+    if (tripped) outcome = "guard_tripped";
     else if (userAborted) outcome = "aborted";
     else if (stuck) outcome = "runaway";
     else if (err) outcome = "error";
-    record("run_end", { outcome, ...(err ? { error: err } : {}), ...(guard.tripped ? { reason: guard.tripped } : {}), ...(stuck ? { reason: stuck } : {}) });
+    record("run_end", { outcome, ...(err ? { error: err } : {}), ...(tripped ? { reason: tripped } : {}), ...(stuck ? { reason: stuck } : {}), ...(repairFailure ? { repairFailure } : {}) });
 
     if (auditError) {
       io.error(`\nAudit log write failed (${auditError}). Stopping: nothing runs without a record.`);
       return false;
     }
-    if (guard.tripped) {
-      io.error("\n" + callLimitMessage(guard.tripped));
+    if (tripped) {
+      io.error("\n" + callLimitMessage(tripped));
       return false;
     }
     if (stuck) {
@@ -551,6 +731,7 @@ export function createEngine(opts: EngineOptions): Engine {
     },
     newConversation() {
       listingSent = false;
+      calcCalls = 0;
       agent.reset();
       ledger.reset();
       visits.reset();

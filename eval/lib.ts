@@ -211,6 +211,7 @@ export function parseAuditLog(text: string): AuditSummary {
   };
   let runStart: number | undefined;
   let lastMsg: any;
+  let shownAnswer: string | undefined; // the text the user was shown as the answer (after the figure gate), when the log records it
   const pageCalls = new Map<string, { path: string; page: number; part: number }>();
   const searchQueries = new Map<string, string>();
   for (const line of text.split("\n")) {
@@ -263,12 +264,15 @@ export function parseAuditLog(text: string): AuditSummary {
           .map((c: any) => c.text)
           .join("");
       }
+    } else if (r.type === "answer_shown" && typeof r.text === "string") {
+      shownAnswer = r.text;
     } else if (r.type === "run_end") {
       s.outcome = r.outcome;
       if (r.error) s.error = r.error;
       if (runStart !== undefined) s.durationMs = Date.parse(r.ts) - runStart;
     }
   }
+  if (shownAnswer !== undefined) s.answer = shownAnswer; // never the draft the gate rejected, nor text it left out
   s.hasAnswer = s.answer.trim() !== "";
   if (!s.hasAnswer && lastMsg?.stopReason === "stop" && !(lastMsg.content ?? []).some((c: any) => c.type === "text" && c.text.trim())) {
     const th = (lastMsg.content ?? []).filter((c: any) => c.type === "thinking").map((c: any) => c.thinking).join("").trim();
@@ -304,6 +308,7 @@ export function replayProvenance(logText: string): ProvenanceSummary {
   const answers: string[] = [];
   const ledger = new Ledger();
   let lastAssistant: any;
+  let shown: string | undefined; // the text the user was shown as the answer, when the log records it
   for (const r of records) {
     if (r.type === "run_start") ledger.addUser(r.text);
     else if (r.type === "tool_start") argsById.set(r.toolCallId, r.args);
@@ -322,7 +327,7 @@ export function replayProvenance(logText: string): ProvenanceSummary {
     } else if (r.type === "message" && r.message.role === "assistant") {
       answers.push(textOf(r.message.content));
       lastAssistant = r.message;
-    }
+    } else if (r.type === "answer_shown" && typeof r.text === "string") shown = r.text;
   }
   // A final reply that exists only in the thinking channel is still something the model asserted: check it too.
   if (lastAssistant && lastAssistant.stopReason === "stop" && textOf(lastAssistant.content).trim() === "") {
@@ -332,7 +337,7 @@ export function replayProvenance(logText: string): ProvenanceSummary {
   for (const p of new Set(chunks.map((c) => c.path))) {
     ledger.addSource(p, chunks.filter((c) => c.path === p).sort((a, b) => a.offset - b.offset).map((c) => c.text).join(""));
   }
-  const checked = answers.flatMap((a) => checkText(a, ledger));
+  const checked = (shown !== undefined ? [shown] : answers).flatMap((a) => checkText(a, ledger)); // the answer the user was shown, when the log says which
   const counts: Record<Class, number> = { S: 0, U: 0, C: 0, K: 0, X: 0 };
   for (const c of checked) counts[c.cls]++;
   return { checked, counts, unverified: checked.filter((c) => c.cls === "X") };

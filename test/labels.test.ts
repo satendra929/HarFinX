@@ -83,5 +83,5 @@ test("a reference mark follows the figure, not the label beside it", () => {
   const l = new Ledger();
   l.addSource("a.pdf p.1", "Revenue  |  $5,000", { file: "a.pdf", page: 1, pageLines: ["Revenue  |  $5,000"], lineOffset: 0, printed: "1" });
   const out = markLine("COVID-19 hit; revenue was $5,000 [Rule 10b-5]", l, new RefNumbers(), (m) => `<${m}>`);
-  assert.equal(out, "COVID-19 hit; revenue was $5,000<[S1]> [Rule 10b-5]");
+  assert.equal(out, "COVID-19 hit; revenue was $5,000<[1]> [Rule 10b-5]");
 });

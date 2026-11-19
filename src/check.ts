@@ -18,7 +18,7 @@ export function answerTextSince(messages: readonly unknown[]): string {
   const list = messages as { role?: string; content?: unknown }[];
   let lastUser = -1;
   list.forEach((m, i) => {
-    if (m?.role === "user") lastUser = i;
+    if (m?.role === "user" && (m as { harness?: string }).harness !== "repair") lastUser = i;
   });
   return list
     .slice(lastUser + 1)

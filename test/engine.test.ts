@@ -52,6 +52,8 @@ interface RigOptions {
   window?: number;
   maxTokens?: number;
   serverContext?: (modelId: string) => Promise<number | undefined>;
+  /** What happens to a figure that cannot be cited after the one repair (default: redact). */
+  figureFallback?: "redact" | "warn";
 }
 
 function rig(opts: RigOptions = {}): Rig {
@@ -85,6 +87,7 @@ function rig(opts: RigOptions = {}): Rig {
     chat: opts.chat ?? false,
     links: false,
     ...(opts.serverContext ? { serverContext: opts.serverContext } : {}),
+    ...(opts.figureFallback ? { figureFallback: opts.figureFallback } : {}),
   });
   return { engine, faux, audit, out, err, text: () => out.join("") };
 }
@@ -104,7 +107,7 @@ test("a read, a calculation and an answer: marks, references, checks and the aud
   assert.deepEqual(r.err, []);
   assert.match(r.text(), /read page 1 of a.pdf/); // the dim tool-call line
   assert.match(r.text(), /Net sales were 32,765/);
-  assert.match(r.text(), /\[S1\]/); // the figure read from the page carries a reference mark
+  assert.match(r.text(), /\[1\]/); // the figure read from the page carries a reference mark
   const t = types(r);
   assert.equal(t[0], "session_start");
   for (const want of ["run_start", "tool_start", "tool_end", "message", "answer_shape", "provenance", "sources", "run_end"]) assert.ok(t.includes(want), `missing ${want}`);
@@ -115,12 +118,14 @@ test("a read, a calculation and an answer: marks, references, checks and the aud
   assert.equal(find(r, "period_units").length, 0); // the named year is the column the figure sits under
 });
 
-test("an untraced figure is reported by the live check and the audit record", async () => {
-  const r = rig();
-  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 99,999.")]);
+test("FIGURE_FALLBACK=warn: an answer that still has an uncited figure after the one repair is shown with a warning line", async () => {
+  const r = rig({ figureFallback: "warn" });
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 99,999."), fauxAssistantMessage("Net sales were 99,999 in 2022.")]);
   assert.equal(await r.engine.ask("What were net sales in 2022?"), true);
+  assert.match(r.text(), /Net sales were 99,999 in 2022\./);
   assert.match(r.text(), /\[check\] 1 figure not traced/);
   assert.equal(find(r, "provenance")[0].data.unverified.length, 1);
+  assert.deepEqual(find(r, "gate_decision").map((d) => [d.data.stage, d.data.figures]), [["first", 1], ["repaired", 1]]);
 });
 
 test("a figure printed under another year than the question names is logged, never shown", async () => {
@@ -293,7 +298,7 @@ test("get_line_item: the structured row is traced, referenced and counted like a
   ]);
   assert.equal(await r.engine.ask("What were total assets at the end of 2022?"), true);
   assert.deepEqual(r.err, []);
-  assert.match(r.text(), /\[S1\]/); // the figure carries a reference mark
+  assert.match(r.text(), /\[1\]/); // the figure carries a reference mark
   assert.equal(find(r, "provenance")[0].data.unverified.length, 0);
   assert.ok(find(r, "sources")[0].data.entries.length >= 1);
   const start = find(r, "session_start")[0].data;
@@ -470,6 +475,7 @@ test("a runaway reply is cut off while it streams and the question is retried on
   assert.equal(find(r, "runaway").length, 1);
   assert.equal(find(r, "runaway_retry").length, 1);
   assert.match(r.text(), /\[stopped\] one reply longer than 300 characters/);
+  assert.ok(r.text().indexOf("xxxxxxxxxx") >= 0 && r.text().indexOf("xxxxxxxxxx") < r.text().indexOf("[stopped]")); // the text that looped comes first, then the stop line
   assert.match(r.text(), /\[repair\] the model got stuck in a loop/);
   assert.match(r.text(), /Done\./);
   assert.equal(r.faux.state.callCount, 2);
@@ -518,8 +524,85 @@ test("a reply with thinking shows a thinking line on its own line and records th
   const r = rig();
   r.faux.setResponses([fauxAssistantMessage([fauxThinking("let me see"), fauxText("Done.")])]);
   await r.engine.ask("hi");
-  assert.match(r.text(), /thinking…\S*\nDone\./);
+  assert.match(r.text(), /thinking…\S*\n\S*writing…\S*\nDone\./); // the answer is held until the reply ends; a status line stands in
   assert.equal(find(r, "message").find((m) => m.data.message.role === "assistant")!.data.timing.thinkingChars, "let me see".length);
+});
+
+// ---- holding replies: only an answer is shown; a draft in a tool-call reply stays in the audit log -------------------------
+
+test("text written in a reply that ends in a tool call is never shown; the answer is printed whole when its reply ends", async () => {
+  const r = rig();
+  r.faux.setResponses([
+    fauxAssistantMessage([fauxText("Draft: net sales were 99,999."), read], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Net sales were 32,765 in 2022."),
+  ]);
+  assert.equal(await r.engine.ask("What were net sales in 2022?"), true);
+  assert.doesNotMatch(r.text(), /Draft: net sales were 99,999/);
+  assert.match(r.text(), /Net sales were 32,765.*\[1\].* in 2022\./); // the mark belongs to the answer's figure, not to the draft's
+  assert.doesNotMatch(r.text(), /\[check\].*not traced/); // the draft's figure was never shown, so it is not reported
+  const replies = find(r, "message").filter((m) => m.data.message.role === "assistant");
+  assert.ok(JSON.stringify(replies[0].data.message).includes("Draft: net sales were 99,999")); // the audit log keeps the draft
+  assert.deepEqual(find(r, "reply_disposition").map((d) => d.data.kind), ["working", "answer"]);
+  assert.equal(find(r, "provenance")[0].data.unverified.length, 1); // all assistant text, as before
+  assert.equal(find(r, "figure_gate")[0].data.untraced.length, 0); // only the answer that was shown
+});
+
+test("one writing line per reply, then the whole answer", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage("Hello there.")]);
+  await r.engine.ask("hi");
+  assert.equal((r.text().match(/writing…/g) ?? []).length, 1);
+  assert.match(r.text(), /writing…\S*\nHello there\./);
+});
+
+test("an answer that ends at the output cap is printed", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 32,765.", { stopReason: "length" })]);
+  await r.engine.ask("hi");
+  assert.match(r.text(), /Net sales were 32,765/);
+});
+
+test("a reply cut off by an error is printed as it is, even when it had a tool call", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([fauxText("half an answ"), read], { stopReason: "error", errorMessage: "boom" })]);
+  assert.equal(await r.engine.ask("hi"), false);
+  assert.match(r.text(), /half an answ/);
+  assert.match(r.text(), /\[the answer is incomplete\]/);
+});
+
+test("a hard stop with text only in the last tool-call reply still shows that text once, with one incomplete note", async () => {
+  const r = rig();
+  const call = (i: number) => fauxAssistantMessage([fauxText(`step ${"abcdefghijklmnopqrstuvwxyz"[i % 26]}`), fauxToolCall("list_files", { path: "." }, { id: `c${i}` })], { stopReason: "toolUse" });
+  r.faux.setResponses(Array.from({ length: 40 }, (_, i) => call(i)));
+  assert.equal(await r.engine.ask("list everything forever"), false);
+  assert.equal((r.text().match(/step [a-z]\b/g) ?? []).length, 1);
+  assert.equal((r.text().match(/\[the answer is incomplete\]/g) ?? []).length, 1);
+});
+
+test("reasoning shown as a last resort is not followed by an earlier draft", async () => {
+  const r = rig();
+  r.faux.setResponses([
+    fauxAssistantMessage([fauxText("my draft"), read], { stopReason: "toolUse" }),
+    fauxAssistantMessage([fauxThinking("first reasoning")]),
+    fauxAssistantMessage([fauxThinking("second reasoning")]),
+  ]);
+  await r.engine.ask("hi");
+  assert.match(r.text(), /second reasoning/);
+  assert.doesNotMatch(r.text(), /my draft/);
+});
+
+test("a new question starts with nothing held: drafts of an earlier question are never shown", async () => {
+  const r = rig({ chat: true });
+  r.faux.setResponses([
+    fauxAssistantMessage([fauxText("draft one"), read], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Answer one."),
+    fauxAssistantMessage([fauxText("draft two"), fauxToolCall("list_files", { path: "." }, { id: "t9" })], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Answer two."),
+  ]);
+  await r.engine.ask("first?");
+  await r.engine.ask("second?");
+  assert.doesNotMatch(r.text(), /draft (one|two)/);
+  assert.match(r.text(), /Answer one\.[^]*Answer two\./);
 });
 
 test("the system prompt tells the model how the harness tells figures from labels", () => {
@@ -552,4 +635,177 @@ test("the engine records a calculation in the ledger before the next call: a lat
   assert.equal(find(r, "provenance")[0].data.unverified.length, 0);
   assert.ok(find(r, "provenance")[0].data.counts.C >= 2);
   assert.equal(find(r, "ledger_feed_error").length, 0);
+});
+
+// ---- citations: a calculated figure shows its formula, its printed operands and the rows they came from -------------------
+
+const calcCall = (inputs: Record<string, string>, expr: string, extra: Record<string, unknown> = {}, id = "t2") => fauxAssistantMessage([fauxToolCall("calculate", { inputs, expr, ...extra }, { id })], { stopReason: "toolUse" });
+
+test("a calculated figure carries a mark, and its entry shows the formula and the entry of its operands", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), calcCall({ a: "32,765", b: "31,009" }, "(a - b) / b", { dp: 1, pct: true }), fauxAssistantMessage("Net sales rose 5.7% in 2022.")]);
+  assert.equal(await r.engine.ask("What was the change in net sales in 2022?"), true);
+  assert.match(r.text(), /Net sales rose 5\.7%.*\[1\].* in 2022\./);
+  assert.match(r.text(), /\[1\]  5\.7% = \(32,765 - 31,009\) \/ 31,009   inputs from \[2\]/);
+  assert.match(r.text(), /\[2\]  a\.pdf  p\.1/);
+  assert.match(r.text(), /Figures are matched by value on the page: check the row and column\./);
+  const c = find(r, "citations")[0].data.figures[0];
+  assert.deepEqual([c.figure, c.kind, c.marks, c.step], ["5.7%", "calc", [1], "result"]);
+  assert.deepEqual(c.operands.map((o: any) => [o.name, o.how, o.page]), [["a", "page", 1], ["b", "page", 1]]);
+});
+
+test("a calculation with an operand that was never printed, or a number the model converted itself, gets no mark", async () => {
+  const r = rig({ figureFallback: "warn" });
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), calcCall({ a: "32,765", b: "30,000" }, "(a - b) / b", { dp: 1, pct: true }), fauxAssistantMessage("Net sales rose 9.2% in 2022."), fauxAssistantMessage("Net sales rose 9.2% in 2022.")]);
+  await r.engine.ask("What was the change in net sales in 2022?");
+  assert.doesNotMatch(r.text(), /9\.2%.*\[\d\]/);
+  const c = find(r, "citations")[0].data.figures.find((f: any) => f.figure === "9.2%");
+  assert.equal(c.kind, "uncited");
+  assert.match(c.reason, /30,000/);
+  const r2 = rig({ figureFallback: "warn" });
+  r2.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), calcCall({ a: "32,765" }, "a * 0.41", { dp: 1 }), fauxAssistantMessage("It is 13,433.7."), fauxAssistantMessage("It is 13,433.7.")]);
+  await r2.engine.ask("What is 41% of net sales in 2022?");
+  assert.equal(find(r2, "citations")[0].data.figures.find((f: any) => f.figure === "13,433.7").kind, "uncited"); // 0.41 is the model's own conversion of 41%
+});
+
+test("two questions in one chat keep separate calculation entries: the same step name is two calculations", async () => {
+  const r = rig({ chat: true });
+  r.faux.setResponses([
+    fauxAssistantMessage([read], { stopReason: "toolUse" }),
+    calcCall({ a: "32,765", b: "31,009" }, "a - b", {}, "c1"),
+    fauxAssistantMessage("The increase was 1,756."),
+    calcCall({ a: "5,921", b: "5,100" }, "a - b", {}, "c2"),
+    fauxAssistantMessage("Net income rose by 821."),
+  ]);
+  await r.engine.ask("What was the increase in net sales?");
+  await r.engine.ask("And in net income?");
+  const calls = find(r, "citations").map((c) => c.data.figures.find((f: any) => f.kind === "calc").call);
+  assert.deepEqual(calls, [1, 2]);
+  assert.match(r.text(), /\[1\]  821 = 5,921 - 5,100/);
+});
+
+test("a quote whose scale word contradicts the page's unit is not marked", async () => {
+  const r = rig({ figureFallback: "warn" });
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were $32,765 billion in 2022."), fauxAssistantMessage("Net sales were $32,765 billion in 2022.")]);
+  await r.engine.ask("What were net sales in 2022?");
+  assert.doesNotMatch(r.text(), /32,765 billion.*\[\d\]/);
+  assert.match(find(r, "citations")[0].data.figures[0].reason, /another unit/);
+});
+
+test("the same value on two rows: the row named in the sentence is the one cited", async () => {
+  const pages = [["Statements", "(in millions)", "Year ended December 31  |  2022  |  2021", "Net sales  |  5,000  |  4,000", "Total assets  |  5,000  |  4,500"].join("\n")];
+  const r = rig({ pages });
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Total assets were 5,000 in 2022.")]);
+  await r.engine.ask("What were total assets in 2022?");
+  assert.match(r.text(), /Total assets +\[5,000\]/);
+  assert.doesNotMatch(r.text(), /Net sales +\[5,000\]/);
+});
+
+
+// ---- the figure gate: an answer is checked before it is shown; one repair; what still cannot be cited is left out --------------
+
+test("the gate: a draft with an uncited figure is never shown; one repair message names it; the repaired answer is shown with its calculation", async () => {
+  const r = rig();
+  r.faux.setResponses([
+    fauxAssistantMessage([read], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Net sales rose 5.6% in 2022."), // the model's own arithmetic
+    calcCall({ a: "32,765", b: "31,009" }, "(a - b) / b", { dp: 1, pct: true }, "t3"),
+    fauxAssistantMessage("Net sales rose 5.7% in 2022."),
+  ]);
+  assert.equal(await r.engine.ask("What was the change in net sales in 2022?"), true);
+  assert.doesNotMatch(r.text(), /5\.6%/); // the draft is never shown
+  assert.match(r.text(), /Net sales rose 5\.7%.*\[1\].* in 2022\./);
+  assert.match(r.text(), /\[1\]  5\.7% = \(32,765 - 31,009\) \/ 31,009/);
+  assert.doesNotMatch(r.text(), /\[check\]/);
+  assert.deepEqual(find(r, "gate_decision").map((d) => [d.data.stage, d.data.figures]), [["first", 1], ["repaired", 0]]);
+  const repair = find(r, "gate_repair")[0].data;
+  assert.match(repair.text, /"5\.6%" in: "Net sales rose 5\.6% in 2022\."/);
+  assert.match(repair.text, /call calculate/);
+  assert.ok(find(r, "message").some((m) => m.data.message.role === "user" && m.data.message.harness === "repair")); // the audit log holds the repair message
+  const shown = find(r, "answer_shown")[0].data;
+  assert.deepEqual([shown.repaired, shown.redacted, shown.withheld], [true, 0, false]);
+  assert.match(shown.text, /5\.7%/);
+  assert.equal(find(r, "run_end")[0].data.outcome, "ok");
+  assert.equal(r.faux.state.callCount, 4);
+});
+
+test("the gate: a clean answer is shown at once, with no repair", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 32,765 in 2022.")]);
+  await r.engine.ask("What were net sales in 2022?");
+  assert.equal(find(r, "gate_repair").length, 0);
+  assert.equal(r.faux.state.callCount, 2);
+  assert.deepEqual(find(r, "gate_decision").map((d) => d.data.stage), ["first"]);
+});
+
+test("the gate: when the second try gives no answer, the repair leaves the conversation and the first answer is shown without its uncited sentence", async () => {
+  const r = rig();
+  r.faux.setResponses([
+    fauxAssistantMessage([read], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Net sales were about 99,999 in 2022. Net sales in 2022 were 32,765 on the income statement."),
+    fauxAssistantMessage([]), // the repair gets an empty reply
+  ]);
+  assert.equal(await r.engine.ask("What were net sales in 2022?"), true); // what went wrong in the second try is not the question's outcome
+  assert.doesNotMatch(r.text(), /99,999/);
+  assert.match(r.text(), /Net sales in 2022 were 32,765/);
+  assert.match(r.text(), /Left out: a sentence with a figure that could not be traced/);
+  assert.equal(find(r, "gate_repair_failed").length, 1);
+  assert.equal(find(r, "run_end")[0].data.outcome, "ok");
+  assert.ok(!(r.engine.agent.state.messages as any[]).some((m) => m.harness === "repair")); // the repair and its replies are gone
+  const shown = find(r, "answer_shown")[0].data;
+  assert.deepEqual([shown.repaired, shown.redacted, shown.withheld], [false, 1, false]);
+  assert.doesNotMatch(shown.text, /99,999/); // the log says what the user saw, not the rejected draft
+});
+
+test("the gate: an answer whose figures all fail is withheld with one fixed line", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 99,999."), fauxAssistantMessage("Net sales were 99,999.")]);
+  await r.engine.ask("What were net sales in 2022?");
+  assert.doesNotMatch(r.text(), /99,999/);
+  assert.match(r.text(), /The answer was withheld: its figures could not be traced to a page or the calculator\./);
+  assert.equal(find(r, "answer_shown")[0].data.withheld, true);
+});
+
+test("the gate: while the reading budget is open the repair message offers to open another page", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 99,999."), fauxAssistantMessage("Net sales were 32,765 in 2022.")]);
+  await r.engine.ask("What were net sales in 2022?");
+  assert.match(find(r, "gate_repair")[0].data.text, /open that page/); // budget not spent: the clause is there
+});
+
+test("the gate: no repair after a stop by the user; the second try is quiet when it is cut off", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([read], { stopReason: "toolUse" }), fauxAssistantMessage("Net sales were 99,999."), (() => { r.engine.stop(); return fauxAssistantMessage("late"); }) as never]);
+  await r.engine.ask("What were net sales in 2022?");
+  assert.equal(find(r, "run_end")[0].data.outcome, "aborted");
+  assert.doesNotMatch(r.text(), /99,999/);
+  assert.equal(find(r, "answer_shown").length, 0);
+});
+
+test("the gate: a partial reply and the reasoning fallback lose their uncited sentences too", async () => {
+  const r = rig();
+  r.faux.setResponses([fauxAssistantMessage([fauxText("Net sales were 99,999. More text follows."), read], { stopReason: "error", errorMessage: "boom" })]);
+  await r.engine.ask("hi");
+  assert.doesNotMatch(r.text(), /99,999/);
+  assert.match(r.text(), /More text follows\./);
+  const r2 = rig();
+  r2.faux.setResponses([fauxAssistantMessage([fauxThinking("Net sales were 99,999.")]), fauxAssistantMessage([fauxThinking("Net sales were 99,999. Other words here.")])]);
+  await r2.engine.ask("hi");
+  assert.doesNotMatch(r2.text(), /99,999/);
+});
+
+test("the gate: the next question in a chat still has its first question and page text; the repair message belongs to the question it was sent in", async () => {
+  const r = rig({ chat: true });
+  r.faux.setResponses([
+    fauxAssistantMessage([read], { stopReason: "toolUse" }),
+    fauxAssistantMessage("Net sales rose 5.6% in 2022."),
+    calcCall({ a: "32,765", b: "31,009" }, "(a - b) / b", { dp: 1, pct: true }, "t3"),
+    fauxAssistantMessage("Net sales rose 5.7% in 2022."),
+    fauxAssistantMessage("Net income was 5,921 in 2022."),
+  ]);
+  await r.engine.ask("What was the change in net sales in 2022?");
+  await r.engine.ask("And net income?");
+  const msgs = r.engine.agent.state.messages as any[];
+  assert.equal(msgs.filter((m) => m.role === "user" && m.harness !== "repair").length, 2); // two questions, one tagged repair message between
+  assert.equal(msgs.filter((m) => m.harness === "repair").length, 1);
 });

@@ -21,6 +21,8 @@ export interface Config {
   fileListFirst: boolean;
   /** STATEMENT_TOOL=on: add the get_line_item tool and its prompt sentence. Off by default: the first live run (2026-11-15) showed no net gain. */
   statementTool: boolean;
+  /** FIGURE_FALLBACK: what happens to a figure that cannot be cited after the one repair: `redact` (default) removes the sentence, `warn` prints the answer and a warning line. */
+  figureFallback: "redact" | "warn";
   /** Override of the provider's reasoning-history policy (src/reasoning.ts); undefined means the profile default. */
   reasoningHistory?: "drop" | "latest" | "keep";
   /** How much of the earlier conversation the model is shown (src/contextSettings.ts). */
@@ -111,6 +113,7 @@ export function loadConfig(overrides: { model?: string } = {}): Config {
     calcShape: env.CALC_SHAPE?.trim() === "expr" ? "expr" : "steps",
     fileListFirst: env.FILE_LIST_FIRST?.trim().toLowerCase() !== "off",
     statementTool: env.STATEMENT_TOOL?.trim().toLowerCase() === "on",
+    figureFallback: env.FIGURE_FALLBACK?.trim().toLowerCase() === "warn" ? "warn" : "redact",
     reasoningHistory,
     context: parseContextConfig(env),
     envFileFound,

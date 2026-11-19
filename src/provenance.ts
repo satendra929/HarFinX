@@ -139,7 +139,7 @@ export function extractNumbers(normalised: string): NumToken[] {
 
 // ---- non-figure rules (K) --------------------------------------------------------------------------
 
-const BARE_CONSTANTS = new Set(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "100", "360", "365", "1000"]);
+const BARE_CONSTANTS = new Set(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "100", "360", "365", "1000", "1000000", "1000000000"]);
 
 /** Returns a reason if the token is not a figure at all, else undefined. Order matters: see classify(). */
 function nonFigureReason(t: NumToken): string | undefined {
@@ -244,11 +244,24 @@ function locateRows(text: string, norm: string, tokens: NumToken[], meta: Source
   }
 }
 
-interface CalcRec {
+/** How a calculation was written: enough to print its formula and to trace its operands (src/cite.ts). */
+export interface CalcMeta {
+  /** The number of the calculate call, counted over the whole chat, so two questions never share one. */
+  call: number;
+  expr: string;
+  inputs: { name: string; literal: string }[];
+  /** Numbers written inside the expression itself. */
+  literals: string[];
+  /** Function names the expression calls. */
+  calls: string[];
+}
+
+export interface CalcRec {
   name: string;
   full: Num;
   shown: string;
   pct: boolean;
+  meta?: CalcMeta;
 }
 
 export class Ledger {
@@ -283,8 +296,16 @@ export class Ledger {
     return this.q;
   }
   /** A calculate step result: `full` is the unrounded value, `shown` what the tool told the model to quote. */
-  addCalc(name: string, full: string, shown: string, pct: boolean): void {
-    this.calcs.push({ name, full: new D(full), shown, pct });
+  addCalc(name: string, full: string, shown: string, pct: boolean, meta?: CalcMeta): void {
+    this.calcs.push({ name, full: new D(full), shown, pct, ...(meta ? { meta } : {}) });
+  }
+  /** Every calculation step recorded in this chat, in order. */
+  get calcRecs(): readonly CalcRec[] {
+    return this.calcs;
+  }
+  /** The steps of one calculate call by name. */
+  stepsOfCall(call: number): Map<string, CalcRec> {
+    return new Map(this.calcs.filter((c) => c.meta?.call === call).map((c) => [c.name, c]));
   }
   reset(): void {
     this.byCanon.clear();

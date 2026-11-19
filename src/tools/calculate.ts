@@ -5,6 +5,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { CATEGORIES, FUNCTIONS, FUNCTION_MAP, helpText } from "../calc/functions.ts";
 import { runProgram, type StepInput } from "../calc/evaluate.ts";
+import { parse, timesHundred } from "../calc/parse.ts";
 import { CalcError, ENGINE, ROUNDING } from "../calc/num.ts";
 import { Ledger, classify, extractNumbers, normalise } from "../provenance.ts";
 
@@ -41,7 +42,9 @@ interface Params {
 /** A calculation as its result's `details` record it: the printed inputs and each step's exact value and shown text. */
 export interface CalcRecord {
   inputs: string[];
-  steps: { name: string; value: string; shown: string; pct: boolean }[];
+  /** The inputs with their names, as given (the literals are the same as in `inputs`). */
+  named: { name: string; literal: string }[];
+  steps: { name: string; expr: string; value: string; shown: string; pct: boolean; calls: string[]; literals: string[] }[];
 }
 
 /**
@@ -50,11 +53,16 @@ export interface CalcRecord {
  */
 export function calcOf(result: unknown): CalcRecord {
   const d = (result as { details?: { inputs?: unknown; steps?: unknown } } | undefined)?.details;
-  const inputs = Array.isArray(d?.inputs) ? d.inputs.flatMap((i) => (typeof i?.literal === "string" ? [i.literal] : [])) : [];
+  const given = Array.isArray(d?.inputs) ? d.inputs.filter((i) => typeof i?.literal === "string") : [];
+  const inputs = given.map((i) => i.literal as string);
+  const named = given.map((i) => ({ name: String(i.name ?? ""), literal: i.literal as string }));
+  const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v is string => typeof v === "string") : []);
   const steps = Array.isArray(d?.steps)
-    ? d.steps.filter((s) => typeof s?.name === "string" && typeof s?.value === "string" && typeof s?.shown === "string").map((s) => ({ name: s.name, value: s.value, shown: s.shown, pct: s.pct === true }))
+    ? d.steps
+        .filter((s) => typeof s?.name === "string" && typeof s?.value === "string" && typeof s?.shown === "string")
+        .map((s) => ({ name: s.name, expr: typeof s.expr === "string" ? s.expr : "", value: s.value, shown: s.shown, pct: s.pct === true, calls: strings(s.calls), literals: strings(s.literals) }))
     : [];
-  return { inputs, steps };
+  return { inputs, named, steps };
 }
 
 export function calculateTool(ledger: Ledger, shape: CalcShape = "steps"): AgentTool<any> {
@@ -132,6 +140,17 @@ export function calculateTool(ledger: Ledger, shape: CalcShape = "steps"): Agent
         }
       }
 
+      // pct:true already shows the value times 100: an expression that multiplies by 100 as well shows a value 100 times too large.
+      for (const s of run.steps) {
+        let twice = false;
+        try {
+          twice = s.pct && timesHundred(parse(s.expr));
+        } catch {
+          twice = false;
+        }
+        if (twice) warnings.push(`step "${s.name}": pct:true already multiplies by 100 and the expression multiplies by 100 as well, so ${s.shown} is 100 times too large. Do not quote it: remove "* 100" from the expression (or set pct:false), then run it again.`);
+      }
+
       // The displayed value must not be a badly rounded version of the exact one (a rate shown as 0.1 instead of 10.3%).
       for (const s of run.steps) {
         if (s.displayLoss !== undefined) {
@@ -154,7 +173,7 @@ export function calculateTool(ledger: Ledger, shape: CalcShape = "steps"): Agent
           engine: ENGINE,
           rounding: ROUNDING,
           inputs: run.inputs.map((i) => ({ name: i.name, literal: i.literal, value: i.value.toString() })),
-          steps: run.steps.map((s) => ({ name: s.name, expr: s.expr, value: s.value.toString(), shown: s.shown, pct: s.pct })),
+          steps: run.steps.map((s) => ({ name: s.name, expr: s.expr, value: s.value.toString(), shown: s.shown, pct: s.pct, calls: s.calls, literals: s.literals })),
           warnings,
         },
       };

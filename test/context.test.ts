@@ -711,3 +711,19 @@ test("a string-content question is not edited in place either (frozen input)", (
   const r = run(m as Msg[], { historyShare: 0.05 }, 8192);
   assert.equal(r.messages[1].content, `${r.report.marker}\n\nnow`);
 });
+
+test("a repair message tagged by the harness stays in its question: the current question is still whole after it", () => {
+  const old = group("old question", { pages: 3 });
+  const current = group("current question", { pages: 2 });
+  const repair: Msg = { role: "user", content: [{ type: "text", text: "Not shown to the user yet: fix it." }], timestamp: 0, harness: "repair" } as Msg;
+  const tail: Msg[] = [repair, asst([{ type: "text", text: "Repaired answer." }])];
+  const tagged = run(chat(old, current, tail), {}, 16384);
+  const pageTexts = (m: Msg[]) => m.filter((x) => x.role === "toolResult").map((x) => (x.content as any[])[0].text as string);
+  // the two page reads of the current question are still the pages themselves, not one-line notes
+  assert.equal(pageTexts(tagged.messages).filter((t) => t.includes("Revenue | 1,000 | 900")).length >= 2, true);
+  // without the tag the repair would start a new question and the page reads before it would be treated as an old question's
+  const untaggedRepair: Msg = { ...repair };
+  delete (untaggedRepair as any).harness;
+  const untagged = run(chat(old, current, [untaggedRepair, asst([{ type: "text", text: "Repaired answer." }])]), {}, 16384);
+  assert.ok(pageTexts(untagged.messages).filter((t) => t.includes("Revenue | 1,000 | 900")).length <= pageTexts(tagged.messages).filter((t) => t.includes("Revenue | 1,000 | 900")).length);
+});

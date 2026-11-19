@@ -235,3 +235,15 @@ test("a percent with no dp defaults to one decimal, and that rounding is checked
   assert.match(r.content[0].text, /WARNING: step "r": shows 0\.0% but the exact value is 0\.0004 \(a fraction\); rounding changed it by 100\.0%/);
   assert.doesNotMatch(r.content[0].text, /set pct:true/); // already a percent: the advice is only about decimals
 });
+
+test("calcOf: the record keeps the inputs with their names, and each step's expression, function calls and written numbers", async () => {
+  const tool = calculateTool(withSource("Net sales 11,503 Operating income 1,306"));
+  const r = await run(tool, { inputs: { s: "11,503", o: "1,306" }, steps: [{ name: "margin", expr: "o / s * 100", dp: 1 }, { name: "g", expr: "pct_change(o, s)", dp: 1, pct: true }] });
+  const c = calcOf(r);
+  assert.deepEqual(c.named, [{ name: "s", literal: "11,503" }, { name: "o", literal: "1,306" }]);
+  assert.deepEqual(c.inputs, ["11,503", "1,306"]); // the literals alone, as before
+  assert.equal(c.steps[0].expr, "o / s * 100");
+  assert.deepEqual(c.steps[0].literals, ["100"]);
+  assert.deepEqual(c.steps[1].calls, ["pct_change"]);
+  assert.deepEqual(calcOf(undefined), { inputs: [], named: [], steps: [] }); // any other result: nothing
+});

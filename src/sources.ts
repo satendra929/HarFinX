@@ -6,8 +6,8 @@ import { extractNumbers, isNonFigure, normalise, type Ledger, type NumToken, typ
 import { nearestHeader, sectionTitle } from "./documents/pages.ts";
 import { oneLine } from "./feedback.ts";
 
-/** Shown above the entries, identically every time. */
-export const DISCLAIMER = "References · number match only: confirm on the page";
+/** Shown once under the entries, identically every time. */
+export const CLOSING_LINE = "Figures are matched by value on the page: check the row and column.";
 
 export interface SourceLimits {
   /** A figure on more pages than this is not listed (a capped list would look like the best matches). */
@@ -15,7 +15,7 @@ export interface SourceLimits {
   rowsPerPage: number;
   entries: number;
 }
-export const DEFAULT_SOURCE_LIMITS: SourceLimits = { pagesPerFigure: 3, rowsPerPage: 2, entries: 4 };
+export const DEFAULT_SOURCE_LIMITS: SourceLimits = { pagesPerFigure: 3, rowsPerPage: 2, entries: 6 };
 
 export interface SourceFigure {
   /** As the source prints it. */
@@ -70,11 +70,11 @@ export function fileKey(file: string): string {
  * A whole number of one or two digits glued to a scale letter, with no currency sign, decimals or percent ("3M"), is
  * more often a name (3M, 7B) than an amount. It gets no mark and no entry; the [check] line is not changed by this.
  */
-function looksLikeName(t: NumToken): boolean {
+export function looksLikeName(t: NumToken): boolean {
   return !!t.scale && !t.money && !t.percent && t.decimals === 0 && /^\d{1,2}[A-Za-z]{1,2}$/.test(t.raw);
 }
 
-type Located = Rec & { where: NonNullable<Rec["where"]> };
+export type Located = Rec & { where: NonNullable<Rec["where"]> };
 /** The place a figure was read at: one key per file and page. */
 export const placeKey = (w: { file: string; page?: number }): string => `${fileKey(w.file)}#${w.page ?? ""}`;
 
@@ -131,8 +131,10 @@ function labelAboveOf(lines: readonly string[] | undefined, lineNo: number | und
  * are skipped. A figure with no recorded row (not read from a file page or text, or typed by the user only) has no entry.
  * `order` are the places already numbered by the marks in the answer (RefNumbers.order): the list holds exactly those,
  * in their numbers, then the places of calculator inputs.
+ * `chosen` (optional) is the row each figure or input was cited to (by its printed text): when it is given, only those rows
+ * are shown and every entry must be a numbered place, so the list holds exactly what the marks and the formulas point at.
  */
-export function buildSources(figures: readonly NumToken[], calcInputs: readonly NumToken[], ledger: Ledger, order: readonly string[], limits: SourceLimits = DEFAULT_SOURCE_LIMITS): SourcesResult {
+export function buildSources(figures: readonly NumToken[], calcInputs: readonly NumToken[], ledger: Ledger, order: readonly string[], limits: SourceLimits = DEFAULT_SOURCE_LIMITS, chosen?: ReadonlyMap<string, readonly Located[]>): SourcesResult {
   const allowed = new Set(order);
   const wanted = new Map<string, { token: NumToken; calcInput: boolean }>();
   for (const t of figures) if (!isNonFigure(t) && !wanted.has(t.raw)) wanted.set(t.raw, { token: t, calcInput: false });
@@ -141,16 +143,17 @@ export function buildSources(figures: readonly NumToken[], calcInputs: readonly 
   const entries = new Map<string, SourceEntry>();
   const many: SourcesResult["many"] = [];
   for (const { token, calcInput } of wanted.values()) {
-    const found = placesOf(token, ledger);
+    const picked = chosen?.get(token.raw);
+    const found = picked ? { recs: [...picked], keys: [...new Set(picked.map((r) => placeKey(r.where)))] } : placesOf(token, ledger);
     if (!found) continue;
-    if (found.keys.length > limits.pagesPerFigure) {
+    if (!picked && found.keys.length > limits.pagesPerFigure) {
       many.push({ figure: found.recs[0].raw, pages: found.keys.length });
       continue;
     }
     for (const r of found.recs) {
       const w = r.where;
       const key = placeKey(w);
-      if (!calcInput && !allowed.has(key)) continue; // a place with no number in the answer: not listed
+      if ((!calcInput || chosen) && !allowed.has(key)) continue; // a place with no number in the answer: not listed
       let entry = entries.get(key);
       const header = w.pageLines && w.lineNo !== undefined ? nearestHeader(w.pageLines, w.lineNo) : {};
       if (!entry) {
@@ -319,15 +322,21 @@ export interface FormatOptions {
 /** The lines to show (plain text, except the optional page links; the CLI makes them dim). Empty when there is nothing to show. */
 export function formatSources(r: SourcesResult, options: FormatOptions = {}): string[] {
   if (r.entries.length === 0 && r.many.length === 0) return [];
-  const out = [DISCLAIMER];
-  for (const e of r.entries) {
-    const page = e.page !== undefined ? linked(`p.${e.page}`, options.link?.(e.file, e.page)) + (e.printed && e.printed !== String(e.page) ? ` (printed ${oneLine(e.printed, 8)})` : "") : "";
-    out.push("  " + [`[S${e.ref}]`, oneLine(e.file, 60), page, e.title ? oneLine(e.title, 70) : ""].filter(Boolean).join("  "));
-    out.push(...entryRows(e));
-    if (e.moreRows) out.push(`    and ${e.moreRows} more row${e.moreRows === 1 ? "" : "s"}`);
-  }
+  const out: string[] = [];
+  for (const e of r.entries) out.push(...formatEntryLines(e, options));
   for (const m of r.many) out.push(`  ${oneLine(m.figure, 30)} appears on ${m.pages} pages; not listed`);
   if (r.moreEntries > 0) out.push(`  and ${r.moreEntries} more page${r.moreEntries === 1 ? "" : "s"}`);
+  out.push(CLOSING_LINE);
+  return out;
+}
+
+/** The lines of one page entry: its reference line, its context line, the column headings and the rows. */
+export function formatEntryLines(e: SourceEntry, options: FormatOptions = {}): string[] {
+  const out: string[] = [];
+  const page = e.page !== undefined ? linked(`p.${e.page}`, options.link?.(e.file, e.page)) + (e.printed && e.printed !== String(e.page) ? ` (printed ${oneLine(e.printed, 8)})` : "") : "";
+  out.push("  " + [`[${e.ref}]`, oneLine(e.file, 60), page, e.title ? oneLine(e.title, 70) : ""].filter(Boolean).join("  "));
+  out.push(...entryRows(e));
+  if (e.moreRows) out.push(`    and ${e.moreRows} more row${e.moreRows === 1 ? "" : "s"}`);
   return out;
 }
 

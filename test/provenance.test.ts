@@ -151,3 +151,17 @@ test("page and part references from filings are labels, not figures", () => {
   l.addSource("a.pdf p.68", "Total current assets 19,815");
   assert.deepEqual(checkText("Per page 68 of 136 (a.pdf p.68): total current assets were 19,815 and not 20,000.", l).map((c) => `${c.token.raw}=${c.cls}`), ["19,815=S", "20,000=X"]);
 });
+
+test("addCalc keeps how a calculation was written; stepsOfCall finds the steps of one call; findCalc and classify do not depend on it", () => {
+  const l = new Ledger();
+  l.addUser("q");
+  const meta = { call: 7, expr: "a - b", inputs: [{ name: "a", literal: "10" }, { name: "b", literal: "4" }], literals: [], calls: [] };
+  l.addCalc("diff", "6", "6", false, meta);
+  l.addCalc("old", "9.5", "9.5", false); // a record without meta (older callers) still works
+  assert.equal(l.calcRecs.length, 2);
+  assert.deepEqual([...l.stepsOfCall(7).keys()], ["diff"]);
+  assert.equal(l.stepsOfCall(8).size, 0);
+  assert.equal(checkText("It was 6 and 9.5.", l).filter((c) => c.cls === "C").length, 2); // classify is unchanged by the meta
+  l.reset();
+  assert.equal(l.calcRecs.length, 0);
+});

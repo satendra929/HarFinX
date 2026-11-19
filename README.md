@@ -61,8 +61,9 @@ Two models have short names: `gemma` (the default) and `qwen`; any installed Oll
 
 ## How answers are checked
 
-- **`[check]` line.** It appears only when something needs attention: a yellow line lists the figures that could not be traced to your file, your question or the calculator. No line means every figure traced. Traceable is not the same as right, and the check only warns.
-- **References.** A dim `[S1]` appears beside each figure read from a page. Under the answer, a numbered list shows where each one is: file, page, heading, units, column heading and the matching rows. It is a number match only, so confirm on the page.
+- **Figure check.** Before an answer is shown, every figure in it is checked: it must be printed on a page the model opened, come from the calculator, or be in your question. If one is not, the model is told once, in a fixed message, to calculate it, read the page or leave it out, and answers again. If a figure still cannot be traced, the sentence holding it is left out and one line says so (set `FIGURE_FALLBACK=warn` to show the answer with a yellow warning line instead). Traceable is not the same as right: check the row and column of each cited figure.
+- **Citations.** A dim mark such as `[1]` appears beside each figure the harness can cite. A figure read from a page points to its row: file, page, heading, units, column heading and the matching row. A figure the calculator computed points to its formula with the printed numbers it used and the rows they came from. The numbered entries are listed under the answer, followed by one line saying figures are matched by value on the page, so confirm the row and column. A figure that cannot be cited gets no mark.
+- **Finished answers only.** The answer appears once the model has finished it (a dim `writing…` line shows meanwhile). Notes the model wrote while still reading pages are kept in the audit log and not shown.
 - **`context N%`.** The last line shows how full the conversation is; near the limit it suggests `/new`.
 
 ## Safety and privacy

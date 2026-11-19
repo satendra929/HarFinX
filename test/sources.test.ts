@@ -8,8 +8,8 @@ import { createDocStore } from "../src/documents/store.ts";
 import type { ParsedPdf } from "../src/documents/pdf.ts";
 import { readPageTool } from "../src/tools/readPage.ts";
 import { readFileTool } from "../src/tools/readFile.ts";
-import { Ledger, checkText, extractNumbers, normalise, type NumToken } from "../src/provenance.ts";
-import { DISCLAIMER, DEFAULT_SOURCE_LIMITS, buildSources, cellIndex, describePositions, fileKey, formatSources, indexOfFigure, placesOf, sourcesForAudit, type SourceLimits } from "../src/sources.ts";
+import { Ledger, checkText, extractNumbers, normalise, type NumToken, type Rec } from "../src/provenance.ts";
+import { CLOSING_LINE, placeKey, DEFAULT_SOURCE_LIMITS, buildSources, cellIndex, describePositions, fileKey, formatSources, indexOfFigure, placesOf, sourcesForAudit, type SourceLimits } from "../src/sources.ts";
 import { RefNumbers } from "../src/refs.ts";
 import { nearestHeader, pageLines, sectionTitle, splitPage } from "../src/documents/pages.ts";
 
@@ -67,10 +67,10 @@ test("formatSources: a short heading line, the page line, then units and column 
   await read(l, [["Consolidated Balance Sheets", "(in millions)", "|  2023  |  2022", "Merchandise inventories  |  5,818  |  5,923"].join("\n")], 1);
   const lines = formatSources(build(answerTokens("Inventories: 5,818.", l), [], l));
   assert.deepEqual(lines, [
-    DISCLAIMER,
-    "  [S1]  filings/a.pdf  p.1  Consolidated Balance Sheets",
+    "  [1]  filings/a.pdf  p.1  Consolidated Balance Sheets",
     "    (in millions)              2023    2022",
     "    Merchandise inventories  [5,818]  5,923",
+    CLOSING_LINE,
   ]);
 });
 
@@ -81,7 +81,7 @@ test("two figures of the answer on one row are one row with both marked; the per
   const r = build(answerTokens("Inventories were $5,818 million, against $5,923 million before.", l), [], l);
   assert.equal(r.entries[0].rows.length, 1);
   const lines = formatSources(r);
-  assert.deepEqual(lines.slice(2), [
+  assert.deepEqual(lines.slice(1, -1), [
     "    (in millions)  ·  As of January 28, 2023",
     "                              Jan 28, 2023   Jan 29, 2022",
     "    Merchandise inventories         [5,818]        [5,923]",
@@ -191,7 +191,7 @@ test("a figure on more than 3 pages is said, not listed", async () => {
   assert.equal(r.entries.length, 0);
   assert.deepEqual(r.many, [{ figure: "4,242", pages: 5 }]);
   const lines = formatSources(r);
-  assert.deepEqual(lines, [DISCLAIMER, "  4,242 appears on 5 pages; not listed"]);
+  assert.deepEqual(lines, ["  4,242 appears on 5 pages; not listed", CLOSING_LINE]);
 });
 
 test("the same figure on two rows of one page lists both rows, up to the row limit", async () => {
@@ -225,7 +225,7 @@ test("a figure that also appears inside a longer number is marked where it reall
   const rows = ["Heading", "Revenue | 1,250 | 250", "Net loss | −473 | 120.5"];
   l.addSource("f p.1", rows.join("\n"), { file: "f.pdf", page: 1, pageLines: rows, lineOffset: 0 });
   const lines = formatSources(build([...toks("250"), ...toks("-473")], [], l));
-  assert.deepEqual(lines.slice(2), ["    Revenue    1,250    [250]   2nd of 2 cells", "    Net loss   [-473]  120.5   1st of 2 cells"]); // each figure marked in its own cell, the unmarked cells lined up under them
+  assert.deepEqual(lines.slice(1, -1), ["    Revenue    1,250    [250]   2nd of 2 cells", "    Net loss   [-473]  120.5   1st of 2 cells"]); // each figure marked in its own cell, the unmarked cells lined up under them
 });
 
 const THREE_M = ["Disaggregated revenue information", "Year ended December 31", "(Millions)  |  2022  |  2021  |  2020", "Other Consumer  |  —  |  (1,011)  |  1", "Total Company  |  $ 34,229  |  $ 35,355  |  $ 32,184", "Worldwide  |  $ 34,229  |  $ 35,355  |  $ 32,184"];
@@ -239,17 +239,17 @@ function threeM(answer: string, opts?: Parameters<typeof formatSources>[1], limi
 test("a units line that is also the column heading line is shown once as units, and the period once; the printed page shows only when it differs", () => {
   const lines = threeM("Net sales were $34,229 million.");
   assert.deepEqual(lines, [
-    DISCLAIMER,
-    "  [S1]  3M.pdf  p.60  Disaggregated revenue information",
+    "  [1]  3M.pdf  p.60  Disaggregated revenue information",
     "    (Millions)  ·  Year ended December 31",
     "                                    2022       2021       2020",
     "    Total Company = Worldwide  [$ 34,229]  $ 35,355   $ 32,184",
+    CLOSING_LINE,
   ]);
 });
 
 test("a dash cell is a cell: the column of a figure next to it is right, and the headings still line up", () => {
   const lines = threeM("Other Consumer was (1,011).");
-  assert.equal(lines.at(-1), "    Other Consumer      —  [(1,011)]     1");
+  assert.equal(lines.at(-2), "    Other Consumer      —  [(1,011)]     1");
   assert.equal(cellPosition("Other | — | (1,011) | 1", "(1,011)"), "2nd of 3 cells");
   assert.equal(cellPosition("Other | – | 5 | 1", "1"), "3rd of 3 cells");
 });
@@ -264,8 +264,8 @@ test("rows with the same figures under different labels become one row; differen
 test("the page reference can be a terminal link; a link with control characters is dropped; nothing else changes", () => {
   const plain = threeM("Net sales were $34,229 million.");
   const withLink = threeM("Net sales were $34,229 million.", { link: (f, p) => `file:///x/${f}#page=${p}` });
-  assert.equal(withLink[1], "  [S1]  3M.pdf  \u001b]8;;file:///x/3M.pdf#page=60\u001b\\p.60\u001b]8;;\u001b\\  Disaggregated revenue information");
-  assert.deepEqual(withLink.filter((_, i) => i !== 1), plain.filter((_, i) => i !== 1));
+  assert.equal(withLink[0], "  [1]  3M.pdf  \u001b]8;;file:///x/3M.pdf#page=60\u001b\\p.60\u001b]8;;\u001b\\  Disaggregated revenue information");
+  assert.deepEqual(withLink.filter((_, i) => i !== 0), plain.filter((_, i) => i !== 0));
   assert.deepEqual(threeM("Net sales were $34,229 million.", { link: () => "file:///x\u001b[2J" }), plain);
   assert.deepEqual(threeM("Net sales were $34,229 million.", { link: () => undefined }), plain);
 });
@@ -276,7 +276,7 @@ test("a heading line without a label cell (2022 | 2021) lines up over the figure
   l.addUser("q");
   l.addSource("f p.1", rows.join("\n"), { file: "a.pdf", page: 1, pageLines: rows, lineOffset: 0 });
   const lines = formatSources(build(answerTokens("4,835 and 1,020", l), [], l));
-  assert.deepEqual(lines.slice(2), ["                              2022    2021", "    Cash                    [4,835]  2,535", "    Short-term investments  [1,020]  1,073"]);
+  assert.deepEqual(lines.slice(1, -1), ["                              2022    2021", "    Cash                    [4,835]  2,535", "    Short-term investments  [1,020]  1,073"]);
 });
 
 test("rows with a different number of cells than the headings are shown unaligned, with their position, and the headings as text", () => {
@@ -285,7 +285,7 @@ test("rows with a different number of cells than the headings are shown unaligne
   l.addUser("q");
   l.addSource("f p.1", rows.join("\n"), { file: "a.pdf", page: 1, pageLines: rows, lineOffset: 0 });
   const lines = formatSources(build(answerTokens("5,818", l), [], l));
-  assert.deepEqual(lines.slice(2), ["    columns: 2022   2021", "    Revenue  [5,818]  5,923   1,111   1st of 3 cells", "    Other  [5,818]  2   1st of 2 cells"]);
+  assert.deepEqual(lines.slice(1, -1), ["    columns: 2022   2021", "    Revenue  [5,818]  5,923   1,111   1st of 3 cells", "    Other  [5,818]  2   1st of 2 cells"]);
 });
 
 test("more rows than the limit on one page: the rest are counted, not silently dropped", async () => {
@@ -352,7 +352,7 @@ test("entries beyond the limit are counted", async () => {
   const r2 = build(answerTokens(Array.from({ length: 9 }, (_, i) => String(3000 + i)).join(", "), many), [], many);
   assert.equal(r2.entries.length, DEFAULT_SOURCE_LIMITS.entries);
   assert.equal(r2.moreEntries, 9 - DEFAULT_SOURCE_LIMITS.entries);
-  assert.equal(formatSources(r2).at(-1), `  and ${9 - DEFAULT_SOURCE_LIMITS.entries} more pages`);
+  assert.equal(formatSources(r2).at(-2), `  and ${9 - DEFAULT_SOURCE_LIMITS.entries} more pages`);
 });
 
 test("one file spelled two ways is one entry", async () => {
@@ -385,8 +385,8 @@ test("text files: sourced by file and row, no page", () => {
   const r = build(answerTokens("Operating income was 1,306.", l), [], l);
   assert.equal(r.entries[0].page, undefined);
   const lines = formatSources(r);
-  assert.equal(lines[1], "  [S1]  notes.txt");
-  assert.equal(lines[2], "    Operating income [1,306]");
+  assert.equal(lines[0], "  [1]  notes.txt");
+  assert.equal(lines[1], "    Operating income [1,306]");
 });
 
 test("records without a recorded row (eval replay style) give no entries and no errors", () => {
@@ -494,4 +494,22 @@ test("pageLines is the very list splitPage cuts into parts, so a part's lines si
   const parts = splitPage(text);
   assert.equal(parts.map((p) => p.split("\n").length).reduce((a, b) => a + b, 0), all.length);
   assert.equal(parts.join("\n"), all.join("\n"));
+});
+
+test("buildSources with chosen rows: only the row each figure was cited to is listed, and only for numbered places", async () => {
+  const l = new Ledger();
+  l.addUser("q");
+  await read(l, [["Heading", "(in millions)", "Revenue  |  5,000  |  1,001", "Total assets  |  5,000  |  1,002"].join("\n")], 1);
+  const t = toks("5,000")[0];
+  const located = l.findAll(t).filter((r) => r.where !== undefined) as (Rec & { where: NonNullable<Rec["where"]> })[];
+  assert.equal(located.length, 2);
+  const assets = located.find((r) => r.where.row.startsWith("Total assets"))!;
+  const order = [placeKey(assets.where)];
+  const chosen = new Map([[t.raw, [assets]]]);
+  const r = buildSources([t], [], l, order, DEFAULT_SOURCE_LIMITS, chosen);
+  assert.deepEqual(r.entries.map((e) => e.rows.map((x) => x.row.split("|")[0].trim())), [["Total assets"]]);
+  const unnumbered = buildSources([t], [], l, [], DEFAULT_SOURCE_LIMITS, chosen);
+  assert.equal(unnumbered.entries.length, 0); // a place with no number is not listed, even for a calculator input
+  const asInput = buildSources([], [t], l, [], DEFAULT_SOURCE_LIMITS, chosen);
+  assert.equal(asInput.entries.length, 0);
 });

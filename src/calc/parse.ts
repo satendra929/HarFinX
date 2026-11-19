@@ -174,3 +174,73 @@ export function callsOf(n: Node, out: Set<string> = new Set()): Set<string> {
   }
   return out;
 }
+
+// ---- printing --------------------------------------------------------------------------------------
+
+const PRINT_PREC = (n: Node): number => (n.t === "bin" ? (n.op === "^" ? 4 : n.op === "*" || n.op === "/" ? 2 : 1) : n.t === "neg" ? 3 : 5);
+
+/**
+ * An expression as text, with parentheses only where precedence needs them, so a substituted sub-expression can never
+ * change the meaning (`a - (b + c)` never prints as `a - b + c`). Names print as they are: replace them first with
+ * `substitute`. Function arguments are separated by "; " so a comma inside a number is never ambiguous.
+ */
+export function printNode(n: Node): string {
+  switch (n.t) {
+    case "num":
+      return n.v;
+    case "name":
+      return n.name;
+    case "neg": {
+      const x = printNode(n.x);
+      return PRINT_PREC(n.x) < 4 ? `-(${x})` : `-${x}`;
+    }
+    case "call":
+      return `${n.name}(${n.args.map(printNode).join("; ")})`;
+    case "bin": {
+      const p = PRINT_PREC(n);
+      const wrapLeft = PRINT_PREC(n.l) < p || (n.op === "^" && (n.l.t === "bin" || n.l.t === "neg"));
+      const wrapRight = n.r.t === "neg" || PRINT_PREC(n.r) < p || (PRINT_PREC(n.r) === p && n.op !== "^" && (n.op === "-" || n.op === "/"));
+      const l = wrapLeft ? `(${printNode(n.l)})` : printNode(n.l);
+      const r = wrapRight ? `(${printNode(n.r)})` : printNode(n.r);
+      return n.op === "^" ? `${l}^${r}` : `${l} ${n.op} ${r}`;
+    }
+  }
+}
+
+/** The tree with each name node replaced by what `by` returns for it (a number text becomes a literal node; a node is used as it is); names it does not know stay. */
+export function substitute(n: Node, by: (name: string) => Node | string | undefined): Node {
+  switch (n.t) {
+    case "num":
+      return n;
+    case "name": {
+      const r = by(n.name);
+      return r === undefined ? n : typeof r === "string" ? { t: "num", v: r } : r;
+    }
+    case "neg":
+      return { t: "neg", x: substitute(n.x, by) };
+    case "bin":
+      return { t: "bin", op: n.op, l: substitute(n.l, by), r: substitute(n.r, by) };
+    case "call":
+      return { t: "call", name: n.name, args: n.args.map((a) => substitute(a, by)), pos: n.pos };
+  }
+}
+
+/** The names an expression uses (not function names), in order of first use. */
+export function namesOf(n: Node, out: string[] = []): string[] {
+  if (n.t === "name") {
+    if (!out.includes(n.name)) out.push(n.name);
+  } else if (n.t === "neg") namesOf(n.x, out);
+  else if (n.t === "bin") {
+    namesOf(n.l, out);
+    namesOf(n.r, out);
+  } else if (n.t === "call") n.args.forEach((a) => namesOf(a, out));
+  return out;
+}
+
+/** Whether the expression multiplies something by 100 (a percent worked out by hand inside the expression). */
+export function timesHundred(n: Node): boolean {
+  if (n.t === "bin") return (n.op === "*" && ((n.l.t === "num" && Number(n.l.v) === 100) || (n.r.t === "num" && Number(n.r.v) === 100))) || timesHundred(n.l) || timesHundred(n.r);
+  if (n.t === "neg") return timesHundred(n.x);
+  if (n.t === "call") return n.args.some(timesHundred);
+  return false;
+}
