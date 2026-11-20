@@ -17,7 +17,7 @@ A local model through Ollama is only needed to try the chat. Both checks above m
 ## Ground rules
 
 - **Privacy first.** Never commit real financial data, filings you do not have the right to share, `.env`, audit logs or anything personal. Test data must be synthetic or tiny public excerpts. Do not put personal or project details in issues, logs or screenshots.
-- **No outbound calls.** The harness must work with nothing leaving the machine when a local model is used. Do not add telemetry, tracking or identifying headers.
+- **No outbound calls.** The harness must work with nothing leaving the machine when a local model is used. Do not add telemetry, tracking or attribution headers.
 - **Figures must trace.** The model never does arithmetic; numbers come from the source as printed or from the `calculate` tool. Do not weaken the figure checker to get a cleaner result.
 - **Keep it small.** ESM TypeScript, no build step, small readable modules. Add a dependency only when it is clearly needed: pin an exact version, and it must be MIT-compatible.
 - **Tests.** Add or update a test for every behaviour change. Tests must run offline and without a model.

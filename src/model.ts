@@ -23,7 +23,7 @@ function assertNoSubscriptionAuth(cfg: Config): void {
 }
 
 export function createModelFor(cfg: Config): { models: ReturnType<typeof createModels>; model: Model<any> } {
-  // No identifying headers.
+  // No attribution headers.
   const models = createModels({ identity: { attribution: null } });
 
   switch (cfg.provider) {

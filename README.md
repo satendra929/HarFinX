@@ -70,7 +70,7 @@ Two models have short names: `gemma` (the default) and `qwen`. Any installed Oll
 - **Untrusted file contents.** Text inside a file is treated as data, not instructions.
 - **Chat memory.** In a long chat the model sees a shortened view of earlier turns. Your full conversation and the audit log are never shortened.
 - **Audit log.** Each session writes a local, append-only record of questions, answers, tool calls and guard decisions (`AUDIT_DIR`, default `audit/`). It contains your data, so treat it as such.
-- **Local by default.** With Ollama everything stays on your machine and no identifying headers are sent.
+- **Local by default.** With Ollama everything stays on your machine. No attribution headers are added to requests.
 
 ## Remote models (optional, paid)
 
@@ -86,4 +86,4 @@ HarFinX is built and tested around local models. Support for larger remote model
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Licences of the open-source packages it depends on: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

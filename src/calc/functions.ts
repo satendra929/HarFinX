@@ -110,7 +110,7 @@ export const FUNCTIONS: FnSpec[] = [
   },
   // Finance measures with one standard, unambiguous definition. Anything analysts define differently (leverage, interest
   // coverage, returns, turnover, per-share figures, free cash flow) is left to an expression until each variant can be a
-  // separate named function: ambiguous metrics get separate names, never flags (decisions.md).
+  // separate named function: ambiguous metrics get separate names, never flags.
   {
     name: "gross_margin", category: "profit", sig: "gross_margin(gross_profit, revenue)", definition: "gross_profit / revenue, as a fraction (use pct for display as a percent); revenue must be greater than zero", minArgs: 2, maxArgs: 2,
     run: (a) => {

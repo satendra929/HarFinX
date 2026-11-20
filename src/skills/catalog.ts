@@ -21,7 +21,7 @@ export const SKILL_LIMITS = {
   compatibilityChars: 500,
 };
 
-/** Folder names git ignores at any depth (.gitignore and .git/info/exclude): a skill with such a name would silently miss a commit. */
+/** Folder names that an ignore rule may hide from git at any depth (the project's .gitignore or a local exclude file): a skill with such a name could silently miss a commit. */
 const GIT_IGNORED_NAMES = new Set(["build", "dist", "docs", "tmp", "logs", "sessions", "coverage", "workspace", "audit", "testspace", "node_modules"]);
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
