@@ -127,7 +127,9 @@ function argSummary(call: Block | undefined): string {
 function stubFor(m: Msg, call: Block | undefined, knobs: ContextKnobs, keepResults: boolean): string | undefined {
   if (m.isError === true || m.toolName === "calculate" || (keepResults && m.toolName === "read_page")) return undefined;
   const text = textOf(m);
-  if (text.length <= knobs.stubOver) return undefined;
+  // A skill is a procedure for one question: in a finished question it is always shortened, at every size (a lenient level would keep it whole
+  // and it could steer an unrelated later question); the model reads it again when the next task needs it.
+  if (m.toolName !== "read_skill" && text.length <= knobs.stubOver) return undefined;
   const tool = clean(m.toolName, 30);
   if (m.toolName === "read_page") {
     const d = (m.details && typeof m.details === "object" ? m.details : {}) as Record<string, unknown>;

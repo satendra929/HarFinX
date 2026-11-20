@@ -12,6 +12,7 @@ import path from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { DEFAULT_LIMITS } from "../src/guard.ts";
 import { PROJECT_ROOT } from "../src/workspace.ts";
+import { discoverSkills } from "../src/skills/catalog.ts";
 import { loadDataset } from "./prepare.ts";
 import { ensurePdf, questionSet } from "./filings.ts";
 import {
@@ -79,7 +80,7 @@ function runOne(prompt: string, auditDirRel: string, workspaceRel: string, timeo
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ["--import", "tsx", "src/cli.ts", prompt], {
       cwd: PROJECT_ROOT,
-      env: { ...process.env, AUDIT_DIR: auditDirRel, WORKSPACE_DIR: workspaceRel }, // one audit folder per question, one staged workspace per run; .env never overrides a set variable
+      env: { ...process.env, AUDIT_DIR: auditDirRel, WORKSPACE_DIR: workspaceRel, SKILLS_DIR: arg("skills") ?? "off" }, // skills are off in every eval run unless --skills <folder> is given (a skill would change every answer); one audit folder per question, one staged workspace per run; .env never overrides a set variable
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
     });
@@ -176,6 +177,8 @@ async function main(): Promise<void> {
     note: "The first question also pays the model load time.",
     trials,
     calcShape: process.env.CALC_SHAPE ?? "steps (default)",
+    // Skills are off in an eval run unless --skills <folder> is given; then each skill's name and hash are recorded (the audit logs hold them too).
+    skills: arg("skills") ? { dir: arg("skills"), loaded: discoverSkills({ dir: arg("skills")!, explicit: true }).skills.map((s) => ({ name: s.name, sha256: s.sha256 })) } : "off",
     questions: picked.map((r) => r.financebench_id),
   };
   fs.writeFileSync(path.join(runDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");

@@ -53,6 +53,9 @@ export function toolLine(name: string, args: unknown, n: number, max: number): s
     case "read_file":
       what = `read ${file ?? "?"}${a.offset !== undefined && a.offset !== 0 ? ` from character ${oneLine(a.offset, 10)}` : ""}`;
       break;
+    case "read_skill":
+      what = `read skill ${oneLine(a.name, 64)}`;
+      break;
     case "calculate": {
       const e = oneLine(calcExprs(a), 70);
       what = e ? `calculate  ${e}` : "calculate";

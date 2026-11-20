@@ -27,6 +27,10 @@ export interface Config {
   readMinPages: number;
   /** READ_SEARCH_FIRST=on (default off): also ask for a search when a long answer was given with no search in the question and the conversation is about a file. Costs a second reply and a search; no measured quality gain yet. */
   readSearchFirst: boolean;
+  /** SKILLS_DIR (default "skills", inside the project; "off" disables): the folder of skills (src/skills/). */
+  skillsDir: string;
+  /** SKILLS_DIR was set by the user, so a missing folder is said at startup instead of ignored. */
+  skillsDirExplicit: boolean;
   /** Override of the provider's reasoning-history policy (src/reasoning.ts); undefined means the profile default. */
   reasoningHistory?: "drop" | "latest" | "keep";
   /** How much of the earlier conversation the model is shown (src/contextSettings.ts). */
@@ -130,6 +134,8 @@ export function loadConfig(overrides: { model?: string } = {}): Config {
     figureFallback: env.FIGURE_FALLBACK?.trim().toLowerCase() === "warn" ? "warn" : "redact",
     readMinPages: parseReadMinPages(env.READ_MIN_PAGES),
     readSearchFirst: env.READ_SEARCH_FIRST?.trim().toLowerCase() === "on",
+    skillsDir: env.SKILLS_DIR?.trim() || "skills",
+    skillsDirExplicit: !!env.SKILLS_DIR?.trim(),
     reasoningHistory,
     context: parseContextConfig(env),
     envFileFound,

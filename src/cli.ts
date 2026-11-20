@@ -12,6 +12,8 @@ import { reasoningProfile } from "./reasoning.ts";
 import { friendlyError } from "./errors.ts";
 import { serverContext } from "./ollamaContext.ts";
 import { createEngine, dim } from "./engine.ts";
+import { discoverSkills } from "./skills/catalog.ts";
+import { skillsBanner } from "./skills/listing.ts";
 
 // Clickable page references (OSC 8 links) only in terminals known to support them; elsewhere the escape codes would print as junk.
 const linkSupported = !!process.stdout.isTTY && !!(process.env.WT_SESSION || process.env.TERM_PROGRAM === "vscode");
@@ -37,6 +39,10 @@ async function main(): Promise<void> {
   // without a record (fail closed).
   const audit = createAuditLog(cfg.auditDir, workspace.root);
 
+  // Skills (src/skills/): read once, here. A skills folder that overlaps the workspace or the audit folder, or lies outside the
+  // project, stops startup like those two do; a bad skill is only skipped and reported (/skills, the audit log).
+  const skills = discoverSkills({ dir: cfg.skillsDir, workspaceRoot: workspace.root, auditDir: path.resolve(PROJECT_ROOT, cfg.auditDir), explicit: cfg.skillsDirExplicit });
+
   // File access only for models on this machine unless explicitly allowed: file contents would go to the cloud provider, or to an Ollama server elsewhere.
   const modelIsLocal = cfg.provider === "ollama" && isLoopbackUrl(cfg.ollamaBaseUrl);
   const filesEnabled = modelIsLocal || cfg.allowCloudFiles;
@@ -51,6 +57,7 @@ async function main(): Promise<void> {
     workspace,
     audit,
     filesEnabled,
+    skills,
     calcShape: cfg.calcShape,
     statementTool: cfg.statementTool,
     figureFallback: cfg.figureFallback,
@@ -133,7 +140,9 @@ async function main(): Promise<void> {
       : "File access: OFF for models that are not on this machine (set ALLOW_CLOUD_FILES=1 to allow; file contents would be sent to the provider)",
   );
   console.log(dim(`Audit log: ${audit.path}`));
-  console.log(dim("Commands: /model (list or switch the model), /context (memory level), /files (list the files and the filing each is), /new (clear conversation), exit. Ctrl+C stops an answer; at the prompt it quits.\n"));
+  const skillsLine = skillsBanner(skills, filesEnabled);
+  if (skillsLine) console.log(dim(skillsLine));
+  console.log(dim("Commands: /model (list or switch the model), /context (memory level), /files (list the files and the filing each is), /skills (the loaded skills), /new (clear conversation), exit. Ctrl+C stops an answer; at the prompt it quits.\n"));
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   rl.on("SIGINT", () => {
@@ -166,6 +175,11 @@ async function main(): Promise<void> {
     }
     if (line === "/files") {
       await engine.filesCommand();
+      if (auditStopped()) break;
+      continue;
+    }
+    if (line === "/skills") {
+      engine.skillsCommand();
       if (auditStopped()) break;
       continue;
     }
