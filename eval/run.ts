@@ -140,6 +140,9 @@ async function main(): Promise<void> {
   picked = picked.slice(0, limit);
   if (picked.length === 0) throw new Error("No questions selected.");
 
+  // Optional experiment aid: text put before every question (to apply guidance to all questions without relying on the model to load a skill). Read first, so a wrong path fails before any run folder exists.
+  const promptPrefix = arg("prompt-prefix") ? fs.readFileSync(path.resolve(PROJECT_ROOT, arg("prompt-prefix")!), "utf8").replace(/\r\n/g, "\n").trimEnd() + "\n\n" : "";
+
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const runId = arg("run-id") ?? `run-${stamp}`;
   if (!/^[A-Za-z0-9._-]+$/.test(runId)) throw new Error("--run-id may contain only letters, digits, . _ -");
@@ -179,6 +182,7 @@ async function main(): Promise<void> {
     calcShape: process.env.CALC_SHAPE ?? "steps (default)",
     // Skills are off in an eval run unless --skills <folder> is given; then each skill's name and hash are recorded (the audit logs hold them too).
     skills: arg("skills") ? { dir: arg("skills"), loaded: discoverSkills({ dir: arg("skills")!, explicit: true }).skills.map((s) => ({ name: s.name, sha256: s.sha256 })) } : "off",
+    promptPrefix: promptPrefix ? { file: arg("prompt-prefix"), sha256: sha256Hex(Buffer.from(promptPrefix, "utf8")) } : "none",
     questions: picked.map((r) => r.financebench_id),
   };
   fs.writeFileSync(path.join(runDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
@@ -190,7 +194,7 @@ async function main(): Promise<void> {
     const sid = trials === 1 ? shortId(rec.financebench_id) : `${shortId(rec.financebench_id)}-t${k + 1}`;
     const auditDirRel = rel("eval", "runs", runId, "audit", sid);
     const t0 = Date.now();
-    const { timedOut } = await runOne(buildPrompt(rec, mode), auditDirRel, workspaceRel, timeoutMs);
+    const { timedOut } = await runOne(promptPrefix + buildPrompt(rec, mode), auditDirRel, workspaceRel, timeoutMs);
 
     const auditDir = path.join(PROJECT_ROOT, auditDirRel);
     const file = fs.existsSync(auditDir) ? fs.readdirSync(auditDir).find((f) => f.endsWith(".jsonl")) : undefined;
